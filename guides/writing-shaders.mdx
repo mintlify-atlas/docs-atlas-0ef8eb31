@@ -1,0 +1,301 @@
+---
+title: "Writing shaders"
+description: "WGSL shader authoring for Motion GPU — built-ins, entry points, includes, defines, and practical patterns."
+keywords: ["WGSL", "fragment shader", "frag", "shade", "motiongpuUniforms", "motiongpuFrame", "includes", "defines", "ShaderPass"]
+---
+
+Motion GPU renders fullscreen fragment shaders written in **WGSL** (WebGPU Shading Language). This page covers the shader conventions Motion GPU imposes, the built-in bindings it injects, and common visual patterns.
+
+## The fragment entry point
+
+Every material must declare exactly this function:
+
+```wgsl
+fn frag(uv: vec2f) -> vec4f
+```
+
+- **`uv`** — normalized coordinates from `(0, 0)` at the bottom-left to `(1, 1)` at the top-right.
+- **Return value** — an RGBA color. Use `1.0` for the alpha channel for opaque output.
+
+`defineMaterial()` validates this contract and throws immediately if the signature is missing or wrong.
+
+### Coordinate space
+
+```
+(0, 1) ───────── (1, 1)
+│                     │
+│    Your canvas      │
+│                     │
+(0, 0) ───────── (1, 0)
+```
+
+This is the standard GPU convention (Y-up), **not** the DOM convention (Y-down). When converting mouse coordinates from DOM events, flip Y:
+
+```typescript
+const uvY = 1.0 - (clientY - rect.top) / rect.height;
+```
+
+## Built-in bindings
+
+Motion GPU injects frame uniforms and all user-declared uniforms and textures automatically. You do **not** declare these bindings yourself.
+
+### Frame uniforms — `motiongpuFrame`
+
+Always available in every shader:
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `motiongpuFrame.time` | `f32` | `requestAnimationFrame` timestamp in seconds (monotonic) |
+| `motiongpuFrame.delta` | `f32` | Time since last frame in seconds (clamped by `maxDelta`) |
+| `motiongpuFrame.resolution` | `vec2f` | Canvas size in physical pixels `(width, height)` |
+
+### User uniforms — `motiongpuUniforms`
+
+Any uniform declared in `defineMaterial({ uniforms: { ... } })` becomes a field on the `motiongpuUniforms` struct:
+
+```typescript
+defineMaterial({
+  fragment: `
+fn frag(uv: vec2f) -> vec4f {
+  let t = sin(motiongpuUniforms.uTime * 3.0);
+  return vec4f(t, uv.y, motiongpuUniforms.uIntensity, 1.0);
+}
+`,
+  uniforms: {
+    uTime:      0,
+    uIntensity: 0.8
+  }
+});
+```
+
+Both `uTime` and `uIntensity` are `f32` fields on `motiongpuUniforms`. See [Uniforms and Textures](/guides/uniforms-and-textures) for all supported types.
+
+### User textures
+
+Textures declared in the material become `texture_2d<f32>` bindings with an associated sampler. For each texture named `uFoo`, the shader gets:
+
+- `uFoo: texture_2d<f32>` — the texture binding
+- `uFooSampler: sampler` — the associated sampler
+
+```typescript
+defineMaterial({
+  fragment: `
+fn frag(uv: vec2f) -> vec4f {
+  let color = textureSample(uAlbedo, uAlbedoSampler, uv);
+  return color;
+}
+`,
+  textures: {
+    uAlbedo: { filter: 'linear' }
+  }
+});
+```
+
+## Using `#include` directives
+
+The `includes` option lets you define named WGSL chunks and reference them with `#include <name>` in your fragment source:
+
+```typescript
+const material = defineMaterial({
+  fragment: `
+#include <noise>
+#include <sdf>
+
+fn frag(uv: vec2f) -> vec4f {
+  let n = fbm(uv * 4.0 + motiongpuFrame.time * 0.1);
+  let d = sdCircle(uv - 0.5, 0.25 + n * 0.05);
+  let edge = smoothstep(0.005, 0.0, d);
+  return vec4f(vec3f(edge), 1.0);
+}
+`,
+  includes: {
+    noise: `/* fbm implementation */`,
+    sdf: `
+fn sdCircle(p: vec2f, r: f32) -> f32 {
+  return length(p) - r;
+}
+`
+  }
+});
+```
+
+Directives are resolved before the shader is compiled. Include names must be valid WGSL identifiers.
+
+## Using compile-time `defines`
+
+Defines are injected as WGSL `const` declarations before your fragment source. They are evaluated at compile time and can eliminate dead code paths:
+
+```typescript
+const material = defineMaterial({
+  fragment: `
+fn frag(uv: vec2f) -> vec4f {
+  let dist = length(uv - 0.5);
+  let edge = smoothstep(RADIUS + EDGE_WIDTH, RADIUS, dist);
+  return vec4f(vec3f(edge), 1.0);
+}
+`,
+  defines: {
+    RADIUS:     0.3,
+    EDGE_WIDTH: 0.005
+  }
+});
+```
+
+The generated WGSL prepended to your source looks like:
+
+```wgsl
+const RADIUS: f32 = 0.30000001192092896;
+const EDGE_WIDTH: f32 = 0.004999999888241291;
+```
+
+Changing a define requires a full pipeline rebuild. Use [runtime uniforms](/guides/uniforms-and-textures) for values that change per frame.
+
+## The ShaderPass entry point
+
+When writing a post-process pass with `ShaderPass`, the fragment contract is different:
+
+```wgsl
+fn shade(inputColor: vec4f, uv: vec2f) -> vec4f
+```
+
+- **`inputColor`** — the sampled result from the previous pass (or the base shader output).
+- **`uv`** — same normalized coordinates as `frag`.
+- **Return value** — the processed RGBA output color.
+
+```typescript
+import { ShaderPass } from '@motion-core/motion-gpu';
+
+const vignette = new ShaderPass({
+  fragment: `
+fn shade(inputColor: vec4f, uv: vec2f) -> vec4f {
+  let dist = distance(uv, vec2f(0.5, 0.5));
+  let v = smoothstep(0.9, 0.35, dist);
+  return vec4f(inputColor.rgb * v, inputColor.a);
+}
+`
+});
+```
+
+See [Render Passes](/guides/render-passes) for more on `ShaderPass`.
+
+## Practical WGSL examples
+
+### UV gradient
+
+The simplest shader maps UV coordinates directly to colors:
+
+```wgsl
+fn frag(uv: vec2f) -> vec4f {
+  return vec4f(uv.x, uv.y, 0.5, 1.0);
+}
+```
+
+### Animated sine wave
+
+```wgsl
+fn frag(uv: vec2f) -> vec4f {
+  let wave = 0.5 + 0.5 * sin(motiongpuFrame.time * 2.0 + uv.x * 10.0);
+  return vec4f(vec3f(wave), 1.0);
+}
+```
+
+### Radial glow
+
+```wgsl
+fn frag(uv: vec2f) -> vec4f {
+  let center = vec2f(0.5, 0.5);
+  let dist = distance(uv, center);
+  let glow = 0.01 / (dist * dist + 0.001);
+  return vec4f(glow * 0.2, glow * 0.4, glow * 0.8, 1.0);
+}
+```
+
+### Circle SDF (signed distance field)
+
+```wgsl
+fn frag(uv: vec2f) -> vec4f {
+  let center = vec2f(0.5, 0.5);
+  let radius = 0.3;
+  let dist = length(uv - center) - radius;
+  let edge = smoothstep(0.005, 0.0, dist);
+  return vec4f(vec3f(edge), 1.0);
+}
+```
+
+### Aspect-ratio correction
+
+The UV space is always `[0..1] × [0..1]`, which stretches non-square canvases. To work in square-pixel space:
+
+```wgsl
+fn frag(uv: vec2f) -> vec4f {
+  let aspect = motiongpuFrame.resolution.x / motiongpuFrame.resolution.y;
+  var corrected = uv;
+  corrected.x *= aspect;
+
+  // corrected.x now ranges from 0 to aspect, corrected.y from 0 to 1
+  let dist = length(corrected - vec2f(aspect * 0.5, 0.5));
+  let circle = smoothstep(0.305, 0.3, dist);
+  return vec4f(vec3f(circle), 1.0);
+}
+```
+
+### UV manipulation
+
+```wgsl
+fn frag(uv: vec2f) -> vec4f {
+  // Tile the UV space 4×4
+  let tiled = fract(uv * 4.0);
+  // Rotate UV around center
+  let angle = motiongpuFrame.time;
+  let c = cos(angle);
+  let s = sin(angle);
+  let centered = uv - 0.5;
+  let rotated = vec2f(c * centered.x - s * centered.y,
+                      s * centered.x + c * centered.y) + 0.5;
+  return vec4f(rotated.x, rotated.y, 0.5, 1.0);
+}
+```
+
+## WGSL quick reference
+
+### Scalar and vector types
+
+| Type | Description | Example |
+| --- | --- | --- |
+| `f32` | 32-bit float | `let x: f32 = 3.14;` |
+| `i32` | 32-bit signed integer | `let n: i32 = 42;` |
+| `u32` | 32-bit unsigned integer | `let n: u32 = 7u;` |
+| `bool` | Boolean | `let b: bool = true;` |
+| `vec2f` | 2-component float vector | `vec2f(1.0, 2.0)` |
+| `vec3f` | 3-component float vector | `vec3f(1.0, 0.5, 0.0)` |
+| `vec4f` | 4-component float vector | `vec4f(r, g, b, a)` |
+
+### Common math functions
+
+| Function | Description |
+| --- | --- |
+| `sin(x)`, `cos(x)`, `tan(x)` | Trigonometry |
+| `abs(x)` | Absolute value |
+| `min(a, b)`, `max(a, b)` | Min/max |
+| `clamp(x, lo, hi)` | Range clamping |
+| `mix(a, b, t)` | Linear interpolation |
+| `step(edge, x)` | Step function (`0.0` or `1.0`) |
+| `smoothstep(lo, hi, x)` | Hermite interpolation |
+| `length(v)` | Vector magnitude |
+| `distance(a, b)` | Distance between two points |
+| `normalize(v)` | Unit vector |
+| `dot(a, b)` | Dot product |
+| `floor(x)`, `ceil(x)` | Rounding |
+| `fract(x)` | Fractional part (`x - floor(x)`) |
+| `pow(x, y)` | Power |
+| `sqrt(x)` | Square root |
+
+## Color space
+
+By default, `FragCanvas` operates in sRGB output color space (`outputColorSpace: 'srgb'`). The renderer applies a linear-to-sRGB conversion to your fragment output automatically.
+
+If you are doing your own color management and want raw linear output, set `outputColorSpace="linear"` on `FragCanvas`.
+
+<Note>
+  Changing `outputColorSpace` triggers a full pipeline rebuild because it alters the pipeline signature.
+</Note>

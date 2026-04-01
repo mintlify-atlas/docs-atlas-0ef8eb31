@@ -1,0 +1,410 @@
+---
+title: "Uniforms and textures"
+description: "Declare uniforms and textures in defineMaterial, then update them at runtime with state.setUniform() and state.setTexture()."
+keywords: ["uniforms", "textures", "setUniform", "setTexture", "TextureDefinition", "useTexture", "storage texture", "motiongpuUniforms"]
+---
+
+Uniforms and textures are the two mechanisms for passing data from JavaScript into WGSL shaders. Uniforms carry scalar and vector values; textures carry image data. Both are declared in `defineMaterial()` and updated at runtime via the `FrameState` API.
+
+## Uniforms
+
+### Declaring uniforms
+
+Declare uniforms in the `uniforms` field of `defineMaterial()`. Each key becomes a field on the `motiongpuUniforms` struct in WGSL:
+
+```typescript
+const material = defineMaterial({
+  fragment: `
+fn frag(uv: vec2f) -> vec4f {
+  let t = sin(motiongpuUniforms.uTime * 3.0);
+  let color = mix(motiongpuUniforms.uColorA, motiongpuUniforms.uColorB, t * 0.5 + 0.5);
+  return vec4f(color, 1.0);
+}
+`,
+  uniforms: {
+    uTime:   0,
+    uColorA: [1.0, 0.2, 0.3],
+    uColorB: [0.2, 0.5, 1.0]
+  }
+});
+```
+
+### Uniform types
+
+Motion GPU supports five WGSL types:
+
+| WGSL type | TypeScript shorthand | Explicit form |
+| --- | --- | --- |
+| `f32` | `number` | `{ type: 'f32', value: number }` |
+| `vec2f` | `[x, y]` | `{ type: 'vec2f', value: [x, y] }` |
+| `vec3f` | `[x, y, z]` | `{ type: 'vec3f', value: [x, y, z] }` |
+| `vec4f` | `[x, y, z, w]` | `{ type: 'vec4f', value: [x, y, z, w] }` |
+| `mat4x4f` | — | `{ type: 'mat4x4f', value: number[] \| Float32Array }` |
+
+The type is inferred from the value shape for the shorthand forms. Use the explicit form when you need `mat4x4f` or want to be precise:
+
+```typescript
+uniforms: {
+  uTime:        0,                                   // f32
+  uMouse:       [0.5, 0.5],                          // vec2f
+  uColor:       [1.0, 0.5, 0.0],                     // vec3f
+  uTint:        [1.0, 1.0, 1.0, 0.8],                // vec4f
+  uTransform:   { type: 'mat4x4f', value: identity } // mat4x4f
+}
+```
+
+<Note>
+  `mat4x4f` must always use the explicit form — a 16-element array cannot be inferred as a matrix type.
+</Note>
+
+### Memory layout
+
+Uniforms are packed into a single GPU uniform buffer using WGSL `std140`-like alignment rules. Entries are sorted alphabetically by name, then placed at the next offset satisfying their alignment:
+
+| Type | Alignment | Size |
+| --- | --- | --- |
+| `f32` | 4 bytes | 4 bytes |
+| `vec2f` | 8 bytes | 8 bytes |
+| `vec3f` | 16 bytes | 12 bytes |
+| `vec4f` | 16 bytes | 16 bytes |
+| `mat4x4f` | 16 bytes | 64 bytes |
+
+The final buffer size is rounded up to a multiple of 16 bytes (minimum 16 bytes). You do not need to manage this manually.
+
+### Updating uniforms at runtime
+
+Inside a `useFrame` callback, call `state.setUniform(name, value)` to update a uniform's value for the current frame:
+
+<Tabs>
+  <Tab title="Svelte">
+    ```svelte Runtime.svelte
+    <script lang="ts">
+      import { useFrame } from '@motion-core/motion-gpu/svelte';
+
+      let mouseX = 0.5;
+      let mouseY = 0.5;
+
+      useFrame((state) => {
+        state.setUniform('uTime',  state.time);
+        state.setUniform('uMouse', [mouseX, mouseY]);
+      });
+    </script>
+    ```
+  </Tab>
+  <Tab title="React">
+    ```tsx Runtime.tsx
+    import { useFrame } from '@motion-core/motion-gpu/react';
+
+    export function Runtime() {
+      useFrame((state) => {
+        state.setUniform('uTime',  state.time);
+        state.setUniform('uMouse', [mouseX, mouseY]);
+      });
+
+      return null;
+    }
+    ```
+  </Tab>
+</Tabs>
+
+**Rules for `setUniform`:**
+
+- The name must exist in the material's `uniforms` map. Setting an unknown name throws.
+- The value shape must match the declared type. Passing `[1, 2]` to an `f32` uniform throws.
+- Material defaults are used for any uniform not set during the frame.
+- Only changed byte ranges are written to the GPU buffer.
+
+### Built-in frame uniforms
+
+The renderer provides a separate built-in `motiongpuFrame` uniform buffer. Do **not** declare these in `defineMaterial()`:
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `motiongpuFrame.time` | `f32` | `requestAnimationFrame` timestamp in seconds |
+| `motiongpuFrame.delta` | `f32` | Frame delta in seconds (clamped by `maxDelta`) |
+| `motiongpuFrame.resolution` | `vec2f` | Canvas size in physical pixels |
+
+---
+
+## Textures
+
+### Declaring textures
+
+Textures are declared in the `textures` field of `defineMaterial()`. Each key `uFoo` creates two WGSL bindings: `uFoo: texture_2d<f32>` and `uFooSampler: sampler`:
+
+```typescript
+const material = defineMaterial({
+  fragment: `
+fn frag(uv: vec2f) -> vec4f {
+  let color = textureSample(uAlbedo, uAlbedoSampler, uv);
+  return color;
+}
+`,
+  textures: {
+    uAlbedo: {
+      colorSpace:      'srgb',
+      filter:          'linear',
+      generateMipmaps: true
+    }
+  }
+});
+```
+
+### Texture definition options
+
+<ParamField path="source" type="TextureValue" default="null">
+  Initial texture binding value. Accepts `ImageBitmap`, `HTMLImageElement`, `HTMLCanvasElement`, `HTMLVideoElement`, a `{ source, width?, height?, ... }` object, or `null`.
+</ParamField>
+
+<ParamField path="colorSpace" type="'srgb' | 'linear'" default="'srgb'">
+  Determines the GPU texture format: `rgba8unorm-srgb` for sRGB, `rgba8unorm` for linear.
+</ParamField>
+
+<ParamField path="flipY" type="boolean" default="true">
+  Flips the texture vertically during upload. Matches the GPU Y-up convention.
+</ParamField>
+
+<ParamField path="generateMipmaps" type="boolean" default="false">
+  Generates a full mip chain after upload. Use when the texture is displayed at varying scales to avoid aliasing.
+</ParamField>
+
+<ParamField path="premultipliedAlpha" type="boolean" default="false">
+  Upload premultiplication behavior. Keep this consistent with your source pipeline.
+</ParamField>
+
+<ParamField path="update" type="'once' | 'onInvalidate' | 'perFrame'">
+  Runtime refresh policy. Automatically inferred from the source type if not set: `HTMLVideoElement` defaults to `perFrame`, everything else defaults to `once`.
+</ParamField>
+
+<ParamField path="filter" type="GPUFilterMode" default="'linear'">
+  Min/mag filter mode. Use `'nearest'` for pixel art or crisp edges.
+</ParamField>
+
+<ParamField path="addressModeU" type="GPUAddressMode" default="'clamp-to-edge'">
+  Horizontal wrap mode. Options: `'clamp-to-edge'`, `'repeat'`, `'mirror-repeat'`.
+</ParamField>
+
+<ParamField path="addressModeV" type="GPUAddressMode" default="'clamp-to-edge'">
+  Vertical wrap mode. Same options as `addressModeU`.
+</ParamField>
+
+<ParamField path="anisotropy" type="number" default="1">
+  Anisotropic filtering level, clamped internally to `1..16`. Values above `1` improve texture quality at oblique angles.
+</ParamField>
+
+<ParamField path="storage" type="boolean" default="false">
+  Marks the texture as compute-writable. Requires `format` to be a storage-compatible `GPUTextureFormat`.
+</ParamField>
+
+<ParamField path="format" type="GPUTextureFormat">
+  Explicit texture format. Required when `storage: true`.
+</ParamField>
+
+<ParamField path="width" type="number">
+  Explicit texture width in pixels. Required for sourceless storage textures.
+</ParamField>
+
+<ParamField path="height" type="number">
+  Explicit texture height in pixels. Required for sourceless storage textures.
+</ParamField>
+
+### TextureUpdateMode
+
+The `update` field controls when the texture is re-uploaded to the GPU:
+
+| Mode | When the texture uploads |
+| --- | --- |
+| `'once'` | On first bind, or when the source object, dimensions, or format change |
+| `'onInvalidate'` | When the scheduler fires an invalidation, or on source change |
+| `'perFrame'` | Every frame, regardless of change detection |
+
+**Resolution precedence:**
+
+1. `TextureData.update` — runtime override from `state.setTexture({ source, update: '...' })`
+2. `TextureDefinition.update` — definition default from `defineMaterial()`
+3. Automatic fallback — `HTMLVideoElement` → `perFrame`; everything else → `once`
+
+### Updating textures at runtime
+
+Call `state.setTexture(name, value)` inside a `useFrame` callback:
+
+<Tabs>
+  <Tab title="Svelte">
+    ```svelte VideoTexture.svelte
+    <script lang="ts">
+      import { useFrame } from '@motion-core/motion-gpu/svelte';
+
+      let video: HTMLVideoElement;
+
+      useFrame((state) => {
+        if (video && video.readyState >= 2) {
+          state.setTexture('uVideo', video);
+        }
+      });
+    </script>
+
+    <video
+      bind:this={video}
+      src="/assets/loop.mp4"
+      autoplay loop muted playsinline
+    />
+    ```
+  </Tab>
+  <Tab title="React">
+    ```tsx VideoTexture.tsx
+    import { useRef } from 'react';
+    import { useFrame } from '@motion-core/motion-gpu/react';
+
+    export function VideoTexture() {
+      const videoRef = useRef<HTMLVideoElement>(null);
+
+      useFrame((state) => {
+        const video = videoRef.current;
+        if (video && video.readyState >= 2) {
+          state.setTexture('uVideo', video);
+        }
+      });
+
+      return (
+        <video
+          ref={videoRef}
+          src="/assets/loop.mp4"
+          autoPlay loop muted playsInline
+        />
+      );
+    }
+    ```
+  </Tab>
+</Tabs>
+
+Because the source is an `HTMLVideoElement`, the update mode automatically defaults to `perFrame`.
+
+### Loading textures from URLs with `useTexture`
+
+The `useTexture()` hook loads an image from a URL and returns an `ImageBitmap` ready for GPU upload:
+
+<Tabs>
+  <Tab title="Svelte">
+    ```svelte App.svelte
+    <script lang="ts">
+      import { FragCanvas, defineMaterial, useTexture } from '@motion-core/motion-gpu/svelte';
+      import Runtime from './Runtime.svelte';
+
+      const material = defineMaterial({
+        fragment: `
+    fn frag(uv: vec2f) -> vec4f {
+      return textureSample(uPhoto, uPhotoSampler, uv);
+    }
+    `,
+        textures: {
+          uPhoto: { filter: 'linear', generateMipmaps: true }
+        }
+      });
+    </script>
+
+    <FragCanvas {material}>
+      <Runtime />
+    </FragCanvas>
+    ```
+
+    ```svelte Runtime.svelte
+    <script lang="ts">
+      import { useFrame, useTexture } from '@motion-core/motion-gpu/svelte';
+
+      const { textures } = useTexture(['/images/photo.jpg']);
+
+      useFrame((state) => {
+        const loaded = textures.current;
+        if (loaded) {
+          state.setTexture('uPhoto', loaded[0]);
+        }
+      });
+    </script>
+    ```
+  </Tab>
+  <Tab title="React">
+    ```tsx App.tsx
+    import { FragCanvas, defineMaterial } from '@motion-core/motion-gpu/react';
+    import { Runtime } from './Runtime';
+
+    const material = defineMaterial({
+      fragment: `
+    fn frag(uv: vec2f) -> vec4f {
+      return textureSample(uPhoto, uPhotoSampler, uv);
+    }
+    `,
+      textures: {
+        uPhoto: { filter: 'linear', generateMipmaps: true }
+      }
+    });
+
+    export function App() {
+      return (
+        <div style={{ width: '100vw', height: '100vh' }}>
+          <FragCanvas material={material}>
+            <Runtime />
+          </FragCanvas>
+        </div>
+      );
+    }
+    ```
+
+    ```tsx Runtime.tsx
+    import { useFrame, useTexture } from '@motion-core/motion-gpu/react';
+
+    export function Runtime() {
+      const { textures } = useTexture(['/images/photo.jpg']);
+
+      useFrame((state) => {
+        const loaded = textures.current;
+        if (loaded) {
+          state.setTexture('uPhoto', loaded[0]);
+        }
+      });
+
+      return null;
+    }
+    ```
+  </Tab>
+</Tabs>
+
+### Storage textures
+
+When `storage: true` is set, the texture participates in compute shader bindings and can be written by compute passes:
+
+```typescript
+const material = defineMaterial({
+  fragment: `
+fn frag(uv: vec2f) -> vec4f {
+  // Read from a compute-written storage texture
+  let px = vec2u(uv * vec2f(f32(512), f32(512)));
+  let color = textureLoad(simOutput, px, 0);
+  return color;
+}
+`,
+  textures: {
+    simOutput: {
+      storage:  true,
+      format:   'rgba8unorm',
+      width:    512,
+      height:   512,
+      fragmentVisible: true
+    }
+  }
+});
+```
+
+<Warning>
+  Storage textures require `format` to be a storage-compatible `GPUTextureFormat`. For `PingPongComputePass`, the target texture must also have explicit `width` and `height`.
+</Warning>
+
+### Practical recommendations
+
+| Use case | Recommended configuration |
+| --- | --- |
+| Static photo or sprite | `update: 'once'`, `generateMipmaps: true` when minified |
+| Event-driven updates | `update: 'onInvalidate'` + explicit `invalidate(token)` |
+| Video / camera / canvas stream | `update: 'perFrame'` (auto-inferred for `HTMLVideoElement`) |
+| Pixel art | `filter: 'nearest'` |
+| Tiling patterns | `addressModeU: 'repeat'`, `addressModeV: 'repeat'` |
+| HDR source data | `colorSpace: 'linear'`, `format: 'rgba16float'` |

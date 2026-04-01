@@ -1,0 +1,96 @@
+---
+title: "Introduction"
+description: "Motion GPU is a tiny WebGPU runtime for writing fullscreen WGSL shaders in React and Svelte 5."
+keywords: ["motion gpu", "webgpu", "wgsl", "shader", "react", "svelte", "fullscreen", "fragment shader"]
+---
+
+`@motion-core/motion-gpu` ships a framework-agnostic core plus Svelte 5 and React adapters for building fullscreen shader pipelines using WebGPU and WGSL. It provides a minimal runtime loop, scheduler, and render graph designed specifically for fragment-driven GPU programs.
+
+Unlike general-purpose 3D engines, Motion GPU focuses on a very narrow problem: **running fullscreen fragment shaders and multi-pass GPU pipelines**.
+
+## When to use Motion GPU
+
+Motion GPU is designed for applications where the entire scene is driven by fullscreen shaders. Typical use cases include:
+
+- Shadertoy-style GPU experiments and live-coding tools
+- Generative art and procedural textures
+- Multi-pass post-processing pipelines
+- GPU particle simulations
+- Shader editors and interactive visual experiments
+
+If your application is primarily a fullscreen fragment shader pipeline, using a full 3D engine adds unnecessary complexity and bundle size.
+
+## Motion GPU vs Three.js
+
+Three.js is a powerful general-purpose 3D engine. Motion GPU focuses on a much narrower problem: running fullscreen WGSL shader pipelines.
+
+| Feature | Three.js | Motion GPU |
+| --- | --- | --- |
+| Scope | Full 3D engine | Fullscreen shader runtime |
+| Shader language | TSL / generated WGSL | Native WGSL |
+| Bundle size | Large | Tiny (3.5–5x smaller) |
+| Rendering model | Scene graph | GPU pipeline |
+| Shader pipeline | Materials | Explicit passes |
+| Multi-pass | Possible but indirect | First-class |
+| Shader debugging | Generated shaders | Direct WGSL |
+
+<Note>
+  Motion GPU is **not a replacement for Three.js**. It is designed for cases where a full 3D engine would be unnecessary overhead.
+</Note>
+
+## Key features
+
+<CardGroup cols={2}>
+  <Card title="Native WGSL shaders" icon="bolt">
+    Write shaders directly in WGSL — no generated code, no abstraction layer between you and the GPU.
+  </Card>
+  <Card title="Tiny bundle size" icon="feather">
+    3.5–5x smaller than Three.js. No scene graph overhead — just the GPU pipeline you need.
+  </Card>
+  <Card title="Multi-pass rendering" icon="layer-group">
+    Built-in `ShaderPass`, `BlitPass`, `CopyPass`, and named render targets for complex pipelines.
+  </Card>
+  <Card title="GPU compute" icon="microchip">
+    First-class `ComputePass` and `PingPongComputePass` for GPU simulations and iterative workloads.
+  </Card>
+  <Card title="Frame scheduler" icon="clock">
+    Task ordering, stages, invalidation modes, diagnostics, and per-task profiling.
+  </Card>
+  <Card title="Error overlay" icon="triangle-exclamation">
+    Structured WGSL error normalization with source-mapped line numbers and a built-in overlay UI.
+  </Card>
+</CardGroup>
+
+## Requirements
+
+<Warning>
+  Motion GPU requires WebGPU support. As of 2026, WebGPU is available in Chrome 113+, Edge 113+, and Safari 18+. Firefox support is in progress. Always check [caniuse.com/webgpu](https://caniuse.com/webgpu) for the current status.
+</Warning>
+
+- **WebGPU-capable browser or runtime** — Chrome 113+, Edge 113+, or Safari 18+
+- **Secure context** — the page must be served over `https://` or `localhost`
+- **React 18+** — required only for the `/react` and `/react/advanced` entrypoints
+- **Svelte 5** — required only for the `/svelte` and `/svelte/advanced` entrypoints
+
+## Entrypoints
+
+The package ships multiple entrypoints so you only import what your framework needs.
+
+| Entrypoint | Framework | Description |
+| --- | --- | --- |
+| `@motion-core/motion-gpu/svelte` | Svelte 5 | `FragCanvas`, hooks, passes, and types |
+| `@motion-core/motion-gpu/svelte/advanced` | Svelte 5 | Everything above, plus scheduler presets and user context APIs |
+| `@motion-core/motion-gpu/react` | React 18+ | `FragCanvas`, hooks, passes, and types |
+| `@motion-core/motion-gpu/react/advanced` | React 18+ | Everything above, plus scheduler presets and user context APIs |
+| `@motion-core/motion-gpu` or `/core` | Framework-agnostic | Adapter-building primitives for custom integrations |
+| `@motion-core/motion-gpu/advanced` or `/core/advanced` | Framework-agnostic | Core plus scheduler and debug utilities |
+
+<Tip>
+  Most applications only need the `/svelte` or `/react` entrypoint. The `/advanced` variants add APIs for scheduler tuning, debug snapshots, and shared user context — reach for them only when you need them.
+</Tip>
+
+## Next steps
+
+<Card title="Get started" icon="rocket" href="/getting-started">
+  Install the package and render your first fullscreen shader in minutes.
+</Card>

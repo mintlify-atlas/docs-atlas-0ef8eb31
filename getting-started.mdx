@@ -1,0 +1,287 @@
+---
+title: "Getting started"
+description: "Install Motion GPU and render your first fullscreen WGSL shader in React or Svelte 5."
+keywords: ["motion gpu", "install", "setup", "quickstart", "react", "svelte", "webgpu", "shader"]
+---
+
+## Installation
+
+<CodeGroup>
+
+```bash npm
+npm install @motion-core/motion-gpu
+```
+
+```bash yarn
+yarn add @motion-core/motion-gpu
+```
+
+```bash pnpm
+pnpm add @motion-core/motion-gpu
+```
+
+```bash bun
+bun add @motion-core/motion-gpu
+```
+
+</CodeGroup>
+
+<Note>
+  React and Svelte are optional peer dependencies. Install whichever framework you use — you do not need both.
+</Note>
+
+## Framework setup
+
+<Steps>
+  <Step title="Render a basic shader">
+    The minimum setup is a material with a `fn frag(uv: vec2f) -> vec4f` entrypoint rendered inside a sized container.
+
+    <Tabs>
+      <Tab title="Svelte 5">
+        ```svelte App.svelte
+        <script lang="ts">
+          import { FragCanvas, defineMaterial } from '@motion-core/motion-gpu/svelte';
+
+          const material = defineMaterial({
+            fragment: `
+        fn frag(uv: vec2f) -> vec4f {
+          return vec4f(uv.x, uv.y, 0.25, 1.0);
+        }
+        `
+          });
+        </script>
+
+        <div style="width: 100vw; height: 100vh;">
+          <FragCanvas {material} />
+        </div>
+        ```
+      </Tab>
+      <Tab title="React">
+        ```tsx App.tsx
+        import { FragCanvas, defineMaterial } from '@motion-core/motion-gpu/react';
+
+        const material = defineMaterial({
+          fragment: `
+        fn frag(uv: vec2f) -> vec4f {
+          return vec4f(uv.x, uv.y, 0.25, 1.0);
+        }
+        `
+        });
+
+        export function App() {
+          return (
+            <div style={{ width: '100vw', height: '100vh' }}>
+              <FragCanvas material={material} />
+            </div>
+          );
+        }
+        ```
+      </Tab>
+    </Tabs>
+
+    This renders a UV gradient: red increases left-to-right, green increases top-to-bottom, and the blue channel is fixed at `0.25`.
+
+    <Tip>
+      `defineMaterial` validates and freezes the material at definition time. Place it outside your component so it is created once, not re-created on every render.
+    </Tip>
+  </Step>
+
+  <Step title="Add animated uniforms with useFrame">
+    Use `useFrame` inside the `<FragCanvas>` subtree to update uniforms on every frame. In Svelte, place the `useFrame` call in a child component mounted inside `<FragCanvas>`. In React, render a child component that returns `null`.
+
+    <Tabs>
+      <Tab title="Svelte 5">
+        ```svelte App.svelte
+        <script lang="ts">
+          import { FragCanvas, defineMaterial } from '@motion-core/motion-gpu/svelte';
+          import Runtime from './Runtime.svelte';
+
+          const material = defineMaterial({
+            fragment: `
+        fn frag(uv: vec2f) -> vec4f {
+          let wave = 0.5 + 0.5 * sin(motiongpuUniforms.uTime + uv.x * 8.0);
+          return vec4f(vec3f(wave), 1.0);
+        }
+        `,
+            uniforms: {
+              uTime: 0
+            }
+          });
+        </script>
+
+        <FragCanvas {material}>
+          <Runtime />
+        </FragCanvas>
+        ```
+
+        ```svelte Runtime.svelte
+        <script lang="ts">
+          import { useFrame } from '@motion-core/motion-gpu/svelte';
+
+          useFrame((state) => {
+            state.setUniform('uTime', state.time);
+          });
+        </script>
+        ```
+      </Tab>
+      <Tab title="React">
+        ```tsx App.tsx
+        import { FragCanvas, defineMaterial } from '@motion-core/motion-gpu/react';
+        import { Runtime } from './Runtime';
+
+        const material = defineMaterial({
+          fragment: `
+        fn frag(uv: vec2f) -> vec4f {
+          let wave = 0.5 + 0.5 * sin(motiongpuUniforms.uTime + uv.x * 8.0);
+          return vec4f(vec3f(wave), 1.0);
+        }
+        `,
+          uniforms: {
+            uTime: 0
+          }
+        });
+
+        export function App() {
+          return (
+            <div style={{ width: '100vw', height: '100vh' }}>
+              <FragCanvas material={material}>
+                <Runtime />
+              </FragCanvas>
+            </div>
+          );
+        }
+        ```
+
+        ```tsx Runtime.tsx
+        import { useFrame } from '@motion-core/motion-gpu/react';
+
+        export function Runtime() {
+          useFrame((state) => {
+            state.setUniform('uTime', state.time);
+          });
+
+          return null;
+        }
+        ```
+      </Tab>
+    </Tabs>
+
+    The `state` object passed to `useFrame` provides `state.time` (elapsed seconds), `state.delta` (frame delta), `state.setUniform`, `state.setTexture`, and more. See [FrameState](/api/types) for the full API.
+
+    <Warning>
+      `useFrame` and `useMotionGPU` must be called **inside** the `<FragCanvas>` component tree. Calling them outside will throw an error.
+    </Warning>
+  </Step>
+
+  <Step title="Load a texture with useTexture">
+    `useTexture` is a helper that loads one or more image URLs and makes them available as named texture slots on the material.
+
+    Declare the texture slot in `defineMaterial`, then load its source with `useTexture` and bind it with `state.setTexture` inside `useFrame`.
+
+    <Tabs>
+      <Tab title="Svelte 5">
+        ```svelte App.svelte
+        <script lang="ts">
+          import { FragCanvas, defineMaterial } from '@motion-core/motion-gpu/svelte';
+          import Runtime from './Runtime.svelte';
+
+          const material = defineMaterial({
+            fragment: `
+        fn frag(uv: vec2f) -> vec4f {
+          return textureSample(uPhoto, sPhoto, uv);
+        }
+        `,
+            textures: {
+              uPhoto: {}
+            }
+          });
+        </script>
+
+        <FragCanvas {material}>
+          <Runtime />
+        </FragCanvas>
+        ```
+
+        ```svelte Runtime.svelte
+        <script lang="ts">
+          import { useFrame, useTexture } from '@motion-core/motion-gpu/svelte';
+
+          const { textures } = useTexture(['/photo.jpg']);
+
+          useFrame((state) => {
+            const loaded = textures.current;
+            if (loaded) {
+              state.setTexture('uPhoto', loaded[0]);
+            }
+          });
+        </script>
+        ```
+      </Tab>
+      <Tab title="React">
+        ```tsx App.tsx
+        import { FragCanvas, defineMaterial } from '@motion-core/motion-gpu/react';
+        import { Runtime } from './Runtime';
+
+        const material = defineMaterial({
+          fragment: `
+        fn frag(uv: vec2f) -> vec4f {
+          return textureSample(uPhoto, sPhoto, uv);
+        }
+        `,
+          textures: {
+            uPhoto: {}
+          }
+        });
+
+        export function App() {
+          return (
+            <div style={{ width: '100vw', height: '100vh' }}>
+              <FragCanvas material={material}>
+                <Runtime />
+              </FragCanvas>
+            </div>
+          );
+        }
+        ```
+
+        ```tsx Runtime.tsx
+        import { useFrame, useTexture } from '@motion-core/motion-gpu/react';
+
+        export function Runtime() {
+          const { textures } = useTexture(['/photo.jpg']);
+
+          useFrame((state) => {
+            const loaded = textures.current;
+            if (loaded) {
+              state.setTexture('uPhoto', loaded[0]);
+            }
+          });
+
+          return null;
+        }
+        ```
+      </Tab>
+    </Tabs>
+
+    <Note>
+      Texture slots must be declared in `defineMaterial({ textures })` before you can call `state.setTexture`. Attempting to set an undeclared texture name throws a runtime error.
+    </Note>
+  </Step>
+</Steps>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Core concepts" icon="lightbulb" href="/concepts">
+    Understand the three-phase model, pipeline rebuild rules, and render modes.
+  </Card>
+  <Card title="Writing shaders" icon="code" href="/guides/writing-shaders">
+    Learn the WGSL contract, built-in uniforms, and include directives.
+  </Card>
+  <Card title="Uniforms and textures" icon="sliders" href="/guides/uniforms-and-textures">
+    Declare and update uniforms, textures, and typed uniform values.
+  </Card>
+  <Card title="Render passes" icon="layer-group" href="/guides/render-passes">
+    Build multi-pass pipelines with ShaderPass, BlitPass, and CopyPass.
+  </Card>
+</CardGroup>

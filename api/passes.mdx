@@ -1,0 +1,591 @@
+---
+title: "Render passes"
+description: "Reference for ShaderPass, BlitPass, CopyPass, ComputePass, and PingPongComputePass — the pass classes used to build post-processing and compute pipelines."
+---
+
+Render passes are objects placed in the `passes` prop of `FragCanvas`. They execute in array order after the base fragment pass each frame. Motion GPU provides five built-in pass classes exported from all entrypoints.
+
+## Import
+
+```typescript
+// From any entrypoint
+import {
+  ShaderPass,
+  BlitPass,
+  CopyPass,
+  ComputePass,
+  PingPongComputePass
+} from '@motion-core/motion-gpu';
+
+// Or from framework-specific entrypoints
+import { ShaderPass } from '@motion-core/motion-gpu/svelte';
+import { ShaderPass } from '@motion-core/motion-gpu/react';
+```
+
+## Slot routing
+
+Render passes (not compute passes) read from an **input slot** and write to an **output slot**. Slots correspond to named surfaces in the render graph.
+
+| Slot name | Description |
+|---|---|
+| `'source'` | Current source surface (ping-pong A) |
+| `'target'` | Current target surface (ping-pong B) |
+| `'canvas'` | The final canvas surface — output-only |
+| `'<name>'` | A named render target from `renderTargets` |
+
+When `needsSwap: true`, source and target are swapped after the pass, so the next pass reads the freshly written output as its source.
+
+<Note>
+  Compute passes (`ComputePass`, `PingPongComputePass`) do not participate in slot routing. They have no `input`, `output`, or `needsSwap` options.
+</Note>
+
+## Shared options
+
+These options are available on all render pass classes (`ShaderPass`, `BlitPass`, `CopyPass`):
+
+<ParamField path="enabled" type="boolean" default="true">
+  Whether this pass participates in the current frame. Disabled passes are skipped entirely — no GPU commands are issued and slot routing does not advance.
+</ParamField>
+
+<ParamField path="needsSwap" type="boolean" default="true">
+  Swaps the `source` and `target` slots after this pass completes. Set to `false` for passes that write to a named render target or to `canvas` directly.
+</ParamField>
+
+<ParamField path="input" type="'source' | 'target' | string" default="'source'">
+  The slot this pass reads from. Use a named render target key to read from an off-screen surface.
+</ParamField>
+
+<ParamField path="output" type="'source' | 'target' | 'canvas' | string" default="'target' (when needsSwap is true)">
+  The slot this pass writes to. Use `'canvas'` to write directly to the final canvas surface.
+</ParamField>
+
+<ParamField path="clear" type="boolean" default="false">
+  Clears the output attachment before the pass draws.
+</ParamField>
+
+<ParamField path="clearColor" type="[number, number, number, number]" default="[0, 0, 0, 1]">
+  RGBA clear color used when `clear` is `true`.
+</ParamField>
+
+<ParamField path="preserve" type="boolean" default="true">
+  Stores the output attachment contents after the pass completes. Required for `CopyPass` direct-copy optimization.
+</ParamField>
+
+---
+
+## ShaderPass
+
+A programmable fullscreen post-processing pass. You provide a WGSL fragment that defines a `shade` function, and `ShaderPass` handles the full-screen triangle, texture binding, and pipeline compilation.
+
+### Shader contract
+
+Your fragment source must declare:
+
+```wgsl
+fn shade(inputColor: vec4f, uv: vec2f) -> vec4f
+```
+
+`ShaderPass` wraps this function in a complete fullscreen pipeline. The `inputColor` parameter receives the sampled texture color at `uv`. Return the final color for this pixel.
+
+<Warning>
+  Construction throws if the fragment source does not contain a `shade` function with exactly this signature.
+</Warning>
+
+### Constructor options
+
+<ParamField path="fragment" type="string" required>
+  WGSL shader source. Must declare `fn shade(inputColor: vec4f, uv: vec2f) -> vec4f`. Also accepts shared options from [Shared options](#shared-options).
+</ParamField>
+
+<ParamField path="filter" type="GPUFilterMode" default="'linear'">
+  Sampler filter mode for sampling the input texture. Use `'nearest'` for pixel-art or sharp upscaling.
+</ParamField>
+
+### Methods
+
+```typescript
+setFragment(fragment: string): void
+```
+Replaces the current shader fragment and invalidates the pipeline cache. The new shader is validated immediately and throws if the contract is not satisfied.
+
+```typescript
+getFragment(): string
+```
+Returns the current fragment source string.
+
+### Example
+
+<Tabs>
+  <Tab title="Svelte">
+    ```svelte
+    <script>
+      import { FragCanvas, defineMaterial, ShaderPass } from '@motion-core/motion-gpu/svelte';
+
+      const material = defineMaterial({ fragment: myShader });
+
+      const vignettePass = new ShaderPass({
+        fragment: `
+          fn shade(inputColor: vec4f, uv: vec2f) -> vec4f {
+            let center = uv - vec2f(0.5);
+            let vignette = 1.0 - dot(center, center) * 2.0;
+            return vec4f(inputColor.rgb * clamp(vignette, 0.0, 1.0), inputColor.a);
+          }
+        `
+      });
+    </script>
+
+    <FragCanvas {material} passes={[vignettePass]} />
+    ```
+  </Tab>
+  <Tab title="React">
+    ```tsx
+    import { FragCanvas, defineMaterial, ShaderPass } from '@motion-core/motion-gpu/react';
+
+    const material = defineMaterial({ fragment: myShader });
+
+    const vignettePass = new ShaderPass({
+      fragment: `
+        fn shade(inputColor: vec4f, uv: vec2f) -> vec4f {
+          let center = uv - vec2f(0.5);
+          let vignette = 1.0 - dot(center, center) * 2.0;
+          return vec4f(inputColor.rgb * clamp(vignette, 0.0, 1.0), inputColor.a);
+        }
+      `
+    });
+
+    export function Scene() {
+      return <FragCanvas material={material} passes={[vignettePass]} />;
+    }
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## BlitPass
+
+A no-op fullscreen blit. Samples the input texture and writes it to the output unchanged. Useful for copying a named render target to `canvas`, or as a placeholder in a pipeline while developing.
+
+Inherits all [Shared options](#shared-options) plus:
+
+<ParamField path="filter" type="GPUFilterMode" default="'linear'">
+  Sampler filter mode used when sampling the input texture.
+</ParamField>
+
+### Example
+
+```typescript
+import { BlitPass } from '@motion-core/motion-gpu';
+
+// Copy the named 'bloom' render target to the canvas
+const blitToCanvas = new BlitPass({
+  input: 'bloom',
+  output: 'canvas',
+  needsSwap: false
+});
+```
+
+---
+
+## CopyPass
+
+Copies a texture from the input slot to the output slot. When conditions allow, uses the GPU's direct `copyTextureToTexture` path (zero draw calls). Falls back to a fullscreen blit otherwise.
+
+### Direct-copy conditions
+
+`CopyPass` uses the fast direct-copy path when all of the following are true:
+
+- `clear` is `false`
+- `preserve` is `true`
+- source and output are different textures
+- neither surface is `canvas`
+- source and output have matching dimensions and format
+
+If any condition is not met, it falls back to a `BlitPass`.
+
+### Constructor options
+
+<ParamField path="enabled" type="boolean" default="true">
+  Whether this pass is active.
+</ParamField>
+
+<ParamField path="needsSwap" type="boolean" default="true">
+  Swap source and target after the copy.
+</ParamField>
+
+<ParamField path="input" type="'source' | 'target' | string" default="'source'">
+  The slot to copy from.
+</ParamField>
+
+<ParamField path="output" type="'source' | 'target' | 'canvas' | string" default="'target' (when needsSwap is true)">
+  The slot to copy to.
+</ParamField>
+
+<ParamField path="clear" type="boolean" default="false">
+  Clear before copying. Enabling this forces the blit fallback.
+</ParamField>
+
+<ParamField path="clearColor" type="[number, number, number, number]" default="[0, 0, 0, 1]">
+  RGBA clear color when `clear` is `true`.
+</ParamField>
+
+<ParamField path="preserve" type="boolean" default="true">
+  Store output after the copy. Setting to `false` forces the blit fallback.
+</ParamField>
+
+<ParamField path="filter" type="GPUFilterMode" default="'linear'">
+  Filter mode used by the blit fallback.
+</ParamField>
+
+### Example
+
+```typescript
+import { CopyPass } from '@motion-core/motion-gpu';
+
+// Save the current frame to a named render target before post-processing
+const saveFrame = new CopyPass({
+  input: 'source',
+  output: 'previous',
+  needsSwap: false
+});
+```
+
+---
+
+## ComputePass
+
+A GPU compute pass for general-purpose workloads. Validates the shader contract at construction time, parses the workgroup size, and resolves dispatch dimensions each frame.
+
+### Shader contract
+
+Your compute shader must declare:
+
+```wgsl
+@compute @workgroup_size(X, Y, Z)
+fn compute(@builtin(global_invocation_id) id: vec3u) {
+  // ...
+}
+```
+
+All three requirements are validated at construction: the `@compute` attribute, `@workgroup_size(...)`, and the `@builtin(global_invocation_id)` parameter.
+
+<Warning>
+  Construction throws if the compute shader does not satisfy all three contract requirements.
+</Warning>
+
+### Constructor options
+
+<ParamField path="compute" type="string" required>
+  WGSL compute shader source. Must satisfy the compute contract described above.
+</ParamField>
+
+<ParamField path="dispatch" type="[number, number?, number?] | 'auto' | (ctx: ComputeDispatchContext) => [number, number, number]" default="'auto'">
+  Dispatch workgroup counts per frame.
+
+  - **Static tuple** `[x]`, `[x, y]`, or `[x, y, z]` — fixed workgroup counts. Missing dimensions default to `1`.
+  - **`'auto'`** — derived from canvas size divided by workgroup size: `[ceil(width / wx), ceil(height / wy), ceil(1 / wz)]`.
+  - **Function** — receives a `ComputeDispatchContext` and returns `[x, y, z]` counts dynamically.
+</ParamField>
+
+<ParamField path="enabled" type="boolean" default="true">
+  Whether this pass is active.
+</ParamField>
+
+### `ComputeDispatchContext`
+
+The context object passed to a function dispatch:
+
+| Field | Type | Description |
+|---|---|---|
+| `width` | `number` | Canvas width in pixels |
+| `height` | `number` | Canvas height in pixels |
+| `time` | `number` | Elapsed time in seconds |
+| `delta` | `number` | Frame delta in seconds |
+| `workgroupSize` | `[number, number, number]` | Parsed workgroup size from the shader |
+
+### Methods
+
+```typescript
+setCompute(compute: string): void
+```
+Replaces the compute shader and updates the parsed workgroup size. Throws if the new shader does not satisfy the compute contract.
+
+```typescript
+setDispatch(dispatch: ComputePassOptions['dispatch']): void
+```
+Updates the dispatch strategy. Passing `undefined` resets to `'auto'`.
+
+```typescript
+getCompute(): string
+```
+Returns the current compute shader source.
+
+```typescript
+getWorkgroupSize(): [number, number, number]
+```
+Returns a copy of the parsed workgroup size `[x, y, z]`.
+
+```typescript
+resolveDispatch(ctx: ComputeDispatchContext): [number, number, number]
+```
+Resolves and returns the workgroup counts `[x, y, z]` for the given frame context. Called by the renderer each frame.
+
+### Example
+
+<Tabs>
+  <Tab title="Svelte">
+    ```svelte
+    <script>
+      import { FragCanvas, defineMaterial, ComputePass } from '@motion-core/motion-gpu/svelte';
+
+      const computeShader = `
+        @group(0) @binding(0) var outputTexture: texture_storage_2d<rgba8unorm, write>;
+
+        @compute @workgroup_size(8, 8, 1)
+        fn compute(@builtin(global_invocation_id) id: vec3u) {
+          let uv = vec2f(id.xy) / vec2f(textureDimensions(outputTexture));
+          textureStore(outputTexture, id.xy, vec4f(uv, 0.0, 1.0));
+        }
+      `;
+
+      const material = defineMaterial({
+        fragment: myShader,
+        textures: {
+          computeOut: { storage: true, format: 'rgba8unorm', width: 512, height: 512 }
+        }
+      });
+
+      const computePass = new ComputePass({ compute: computeShader });
+    </script>
+
+    <FragCanvas {material} passes={[computePass]} />
+    ```
+  </Tab>
+  <Tab title="React">
+    ```tsx
+    import { FragCanvas, defineMaterial, ComputePass } from '@motion-core/motion-gpu/react';
+
+    const computeShader = `
+      @group(0) @binding(0) var outputTexture: texture_storage_2d<rgba8unorm, write>;
+
+      @compute @workgroup_size(8, 8, 1)
+      fn compute(@builtin(global_invocation_id) id: vec3u) {
+        let uv = vec2f(id.xy) / vec2f(textureDimensions(outputTexture));
+        textureStore(outputTexture, id.xy, vec4f(uv, 0.0, 1.0));
+      }
+    `;
+
+    const material = defineMaterial({
+      fragment: myShader,
+      textures: {
+        computeOut: { storage: true, format: 'rgba8unorm', width: 512, height: 512 }
+      }
+    });
+
+    const computePass = new ComputePass({ compute: computeShader });
+
+    export function Scene() {
+      return <FragCanvas material={material} passes={[computePass]} />;
+    }
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## PingPongComputePass
+
+An iterative compute pass that alternates between two texture buffers (A and B) each iteration. This enables read-from-previous-write patterns required by fluid simulations, reaction-diffusion systems, and particle physics.
+
+The engine auto-generates `{target}A` and `{target}B` storage texture bindings from the `target` key you specify. You declare the `target` key in `material.textures` with `storage: true` and explicit `width`/`height`. Motion GPU handles allocation of both ping-pong surfaces.
+
+### Constructor options
+
+<ParamField path="compute" type="string" required>
+  WGSL compute shader source. Must satisfy the same contract as `ComputePass`.
+</ParamField>
+
+<ParamField path="target" type="string" required>
+  The base texture key from `material.textures` (declared with `storage: true`). The engine derives `{target}A` and `{target}B` binding names automatically.
+</ParamField>
+
+<ParamField path="iterations" type="number" default="1">
+  Number of compute iterations per frame. Must be a positive integer greater than or equal to `1`. Each iteration alternates which buffer is read and which is written.
+</ParamField>
+
+<ParamField path="dispatch" type="[number, number?, number?] | 'auto' | (ctx: ComputeDispatchContext) => [number, number, number]" default="'auto'">
+  Dispatch workgroup counts. Same behavior as `ComputePass` — see [dispatch](#constructor-options-2) above.
+</ParamField>
+
+<ParamField path="enabled" type="boolean" default="true">
+  Whether this pass is active.
+</ParamField>
+
+### Methods
+
+```typescript
+getCurrentOutput(): string
+```
+Returns the texture key holding the latest result — either `'{target}A'` or `'{target}B'`, depending on the total iteration parity across all frames. Use this to read the current output in your fragment shader.
+
+```typescript
+advanceFrame(): void
+```
+Increments the internal frame counter. Called by the renderer after each frame's iterations complete. Do not call this manually.
+
+```typescript
+setCompute(compute: string): void
+```
+Replaces the compute shader and updates the parsed workgroup size.
+
+```typescript
+setIterations(count: number): void
+```
+Updates the iteration count. Must be a positive integer greater than or equal to `1`.
+
+```typescript
+setDispatch(dispatch: ComputePassOptions['dispatch']): void
+```
+Updates the dispatch strategy.
+
+```typescript
+getTarget(): string
+```
+Returns the base target texture key.
+
+```typescript
+getIterations(): number
+```
+Returns the current iteration count.
+
+```typescript
+getCompute(): string
+```
+Returns the current compute shader source.
+
+```typescript
+getWorkgroupSize(): [number, number, number]
+```
+Returns a copy of the parsed workgroup size.
+
+```typescript
+resolveDispatch(ctx: ComputeDispatchContext): [number, number, number]
+```
+Resolves workgroup counts for the given frame context.
+
+### Example
+
+<Tabs>
+  <Tab title="Svelte">
+    ```svelte
+    <script>
+      import {
+        FragCanvas,
+        defineMaterial,
+        PingPongComputePass
+      } from '@motion-core/motion-gpu/svelte';
+
+      const diffuseShader = `
+        @group(0) @binding(0) var stateA: texture_storage_2d<rgba8unorm, read>;
+        @group(0) @binding(1) var stateB: texture_storage_2d<rgba8unorm, write>;
+
+        @compute @workgroup_size(8, 8, 1)
+        fn compute(@builtin(global_invocation_id) id: vec3u) {
+          let size = vec2i(textureDimensions(stateA));
+          let current = textureLoad(stateA, vec2i(id.xy));
+          // Simple diffuse: average with neighbors
+          let up    = textureLoad(stateA, clamp(vec2i(id.xy) + vec2i(0,  1), vec2i(0), size - 1));
+          let down  = textureLoad(stateA, clamp(vec2i(id.xy) + vec2i(0, -1), vec2i(0), size - 1));
+          let left  = textureLoad(stateA, clamp(vec2i(id.xy) + vec2i(-1, 0), vec2i(0), size - 1));
+          let right = textureLoad(stateA, clamp(vec2i(id.xy) + vec2i( 1, 0), vec2i(0), size - 1));
+          let avg = (current + up + down + left + right) / 5.0;
+          textureStore(stateB, id.xy, avg);
+        }
+      `;
+
+      const pingPongPass = new PingPongComputePass({
+        compute: diffuseShader,
+        target: 'state',
+        iterations: 4
+      });
+
+      const material = defineMaterial({
+        fragment: `
+fn frag(uv: vec2f) -> vec4f {
+  return textureSample(state, stateSampler, uv);
+}
+        `,
+        textures: {
+          state: { storage: true, format: 'rgba8unorm', width: 512, height: 512 }
+        }
+      });
+    </script>
+
+    <FragCanvas {material} passes={[pingPongPass]} />
+    ```
+  </Tab>
+  <Tab title="React">
+    ```tsx
+    import {
+      FragCanvas,
+      defineMaterial,
+      PingPongComputePass
+    } from '@motion-core/motion-gpu/react';
+
+    const diffuseShader = `
+      @group(0) @binding(0) var stateA: texture_storage_2d<rgba8unorm, read>;
+      @group(0) @binding(1) var stateB: texture_storage_2d<rgba8unorm, write>;
+
+      @compute @workgroup_size(8, 8, 1)
+      fn compute(@builtin(global_invocation_id) id: vec3u) {
+        let size = vec2i(textureDimensions(stateA));
+        let current = textureLoad(stateA, vec2i(id.xy));
+        let up    = textureLoad(stateA, clamp(vec2i(id.xy) + vec2i(0,  1), vec2i(0), size - 1));
+        let down  = textureLoad(stateA, clamp(vec2i(id.xy) + vec2i(0, -1), vec2i(0), size - 1));
+        let left  = textureLoad(stateA, clamp(vec2i(id.xy) + vec2i(-1, 0), vec2i(0), size - 1));
+        let right = textureLoad(stateA, clamp(vec2i(id.xy) + vec2i( 1, 0), vec2i(0), size - 1));
+        let avg = (current + up + down + left + right) / 5.0;
+        textureStore(stateB, id.xy, avg);
+      }
+    `;
+
+    const pingPongPass = new PingPongComputePass({
+      compute: diffuseShader,
+      target: 'state',
+      iterations: 4
+    });
+
+    const material = defineMaterial({
+      fragment: `
+fn frag(uv: vec2f) -> vec4f {
+  return textureSample(state, stateSampler, uv);
+}
+      `,
+      textures: {
+        state: { storage: true, format: 'rgba8unorm', width: 512, height: 512 }
+      }
+    });
+
+    export function Scene() {
+      return <FragCanvas material={material} passes={[pingPongPass]} />;
+    }
+    ```
+  </Tab>
+</Tabs>
+
+<Tip>
+  Use `pingPongPass.getCurrentOutput()` to read the correct output texture key in your fragment shader when you need to sample the latest simulation state dynamically.
+</Tip>
+
+---
+
+## Slot constraints
+
+| Rule | Effect |
+|---|---|
+| `needsSwap: true` requires `input: 'source'` and `output: 'target'` | Invalid combinations throw at runtime |
+| `'canvas'` is output-only | Setting `input: 'canvas'` throws |
+| Named targets must exist in `renderTargets` | Unknown target names throw |
+| Named targets must be written before read in the frame plan | Read-before-write throws |
+
+Compute passes (`ComputePass`, `PingPongComputePass`) are exempt from all slot routing rules.

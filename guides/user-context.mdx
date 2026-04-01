@@ -1,0 +1,312 @@
+---
+title: "User Context"
+description: "Share namespaced reactive state across the FragCanvas component tree with useMotionGPUUserContext and setMotionGPUUserContext."
+---
+
+User context is a namespaced, reactive shared state store accessible to every component inside a `FragCanvas` subtree. It is useful when multiple sibling or deeply nested components need to share GPU-relevant data — such as camera position, mouse coordinates, or plugin configuration — without prop drilling.
+
+<Note>
+  User context is available from the **advanced entrypoint** only.
+
+  ```typescript
+  // Svelte
+  import { useMotionGPUUserContext, setMotionGPUUserContext } from '@motion-core/motion-gpu/svelte/advanced';
+
+  // React
+  import {
+    useMotionGPUUserContext,
+    setMotionGPUUserContext,
+    useSetMotionGPUUserContext
+  } from '@motion-core/motion-gpu/react/advanced';
+  ```
+</Note>
+
+## What user context is
+
+The user context is a `CurrentWritable` store inside `useMotionGPU().user`. Each namespace key maps to an arbitrary typed value. Multiple components can write to different namespaces without conflicting.
+
+The API is intentionally split:
+
+- **`useMotionGPUUserContext()`** — read access (returns a reactive `CurrentReadable`)
+- **`setMotionGPUUserContext()`** — write access with explicit conflict semantics
+- **`useSetMotionGPUUserContext()`** — (React only) stable setter hook for effects and event handlers
+
+## When to use user context vs component state
+
+| Scenario | Recommended approach |
+|---|---|
+| State used by one component | Component-local state |
+| State passed down 1–2 levels | Props |
+| State shared by many sibling/nested components | User context |
+| Plugin initialization (must run once) | `setMotionGPUUserContext` with `existing: 'skip'` |
+| State needing reactive reads in `useFrame` | User context (`.current` gives sync read) |
+
+---
+
+## Reading user context
+
+### Read the entire store
+
+```typescript
+const allCtx = useMotionGPUUserContext();
+// Returns CurrentReadable<Record<string | symbol, unknown>>
+
+// Sync read
+console.log(allCtx.current);
+
+// Reactive subscription
+allCtx.subscribe((ctx) => console.log(ctx));
+```
+
+### Read a single namespace
+
+```typescript
+type OrbitState = { enabled: boolean; speed: number };
+
+const orbit = useMotionGPUUserContext<OrbitState>('orbit-controls');
+// Returns CurrentReadable<OrbitState | undefined>
+
+// Sync read (for useFrame callbacks)
+const current = orbit.current;
+
+// Reactive subscription
+orbit.subscribe((value) => {
+  if (value?.enabled) { /* ... */ }
+});
+```
+
+---
+
+## Writing user context
+
+### setMotionGPUUserContext
+
+```typescript
+const result = setMotionGPUUserContext('orbit-controls', () => ({
+  enabled: true,
+  speed: 1.0
+}), { existing: 'skip' });
+```
+
+The second argument is a **value or factory function**. When `functionValue` is `'factory'` (default), a function is called and its return value is stored. To store a function itself, pass `{ functionValue: 'value' }`.
+
+The return value is the effective value currently stored under the namespace after the write.
+
+### SetMotionGPUUserContextOptions
+
+<ParamField path="existing" type="'skip' | 'replace' | 'merge'" default="'skip'">
+  What to do when the namespace already has a value.
+
+  - `'skip'` — keep the current value, ignore the new one (factory is not called)
+  - `'replace'` — overwrite with the new value
+  - `'merge'` — shallow-merge the new object into the existing one; falls back to replace for non-objects
+</ParamField>
+
+<ParamField path="functionValue" type="'factory' | 'value'" default="'factory'">
+  How to handle function inputs.
+
+  - `'factory'` — call the function and store its return value
+  - `'value'` — store the function itself as the context value
+</ParamField>
+
+### React: useSetMotionGPUUserContext
+
+In React, use `useSetMotionGPUUserContext()` to get a stable setter bound to the current context store. This is necessary in effects and event handlers where hooks cannot be called conditionally.
+
+```tsx
+import { useSetMotionGPUUserContext } from '@motion-core/motion-gpu/react/advanced';
+
+function QualityButton() {
+  const setUserContext = useSetMotionGPUUserContext();
+
+  return (
+    <button
+      onClick={() => {
+        setUserContext('config', { quality: 'medium' }, { existing: 'merge' });
+      }}
+    >
+      Set medium quality
+    </button>
+  );
+}
+```
+
+---
+
+## Conflict strategies
+
+| Strategy | Behavior |
+|---|---|
+| `'skip'` | Namespace already exists — keep current value. Factory is not called. |
+| `'replace'` | Overwrite the namespace with the new value unconditionally. |
+| `'merge'` | Shallow-merge new value into existing value: `{ ...existing, ...new }`. Falls back to replace if either value is not a plain object. |
+
+---
+
+## Practical patterns
+
+### Plugin initialization
+
+```typescript
+// Only initialize if nothing has set this namespace yet
+setMotionGPUUserContext('config', () => ({
+  quality: 'high',
+  debugGrid: false
+}), { existing: 'skip' });
+```
+
+### Force override
+
+```typescript
+// Debug panel forces specific settings
+setMotionGPUUserContext('config', () => ({
+  quality: 'low',
+  debugGrid: true
+}), { existing: 'replace' });
+```
+
+### Partial update
+
+```typescript
+// Only change the 'quality' field — preserve other keys
+setMotionGPUUserContext('config', { quality: 'medium' }, { existing: 'merge' });
+```
+
+---
+
+## Example: mouse coordinates as user context
+
+A common pattern is writing mouse coordinates into user context from a pointer handler and reading them in a `useFrame` callback deep in the component tree.
+
+<Tabs>
+  <Tab title="Svelte">
+    ```svelte
+    <!-- MouseTracker.svelte — writes mouse into user context -->
+    <script lang="ts">
+      import { useMotionGPU } from '@motion-core/motion-gpu/svelte';
+      import {
+        setMotionGPUUserContext,
+        useMotionGPUUserContext
+      } from '@motion-core/motion-gpu/svelte/advanced';
+
+      const gpu = useMotionGPU();
+
+      // Initialize the namespace once
+      setMotionGPUUserContext('mouse', () => ({ x: 0.5, y: 0.5 }), {
+        existing: 'skip'
+      });
+
+      $effect(() => {
+        const canvas = gpu.canvas;
+        if (!canvas) return;
+
+        const onMove = (e: PointerEvent) => {
+          const rect = canvas.getBoundingClientRect();
+          setMotionGPUUserContext('mouse', {
+            x: (e.clientX - rect.left) / rect.width,
+            y: 1.0 - (e.clientY - rect.top) / rect.height
+          }, { existing: 'replace' });
+        };
+
+        canvas.addEventListener('pointermove', onMove);
+        return () => canvas.removeEventListener('pointermove', onMove);
+      });
+    </script>
+    ```
+
+    ```svelte
+    <!-- ShaderUpdater.svelte — reads mouse from user context in useFrame -->
+    <script lang="ts">
+      import { useFrame } from '@motion-core/motion-gpu/svelte';
+      import { useMotionGPUUserContext } from '@motion-core/motion-gpu/svelte/advanced';
+
+      type Mouse = { x: number; y: number };
+      const mouse = useMotionGPUUserContext<Mouse>('mouse');
+
+      useFrame((state) => {
+        const m = mouse.current;
+        if (m) {
+          state.setUniform('uMouse', [m.x, m.y]);
+        }
+        state.setUniform('uTime', state.time);
+      });
+    </script>
+    ```
+  </Tab>
+  <Tab title="React">
+    ```tsx
+    // MouseTracker.tsx — writes mouse into user context
+    import { useEffect } from 'react';
+    import { useMotionGPU } from '@motion-core/motion-gpu/react';
+    import {
+      useSetMotionGPUUserContext,
+      setMotionGPUUserContext
+    } from '@motion-core/motion-gpu/react/advanced';
+
+    export function MouseTracker() {
+      const gpu = useMotionGPU();
+      const setUserContext = useSetMotionGPUUserContext();
+
+      // Initialize namespace once
+      setMotionGPUUserContext('mouse', () => ({ x: 0.5, y: 0.5 }), {
+        existing: 'skip'
+      });
+
+      useEffect(() => {
+        const canvas = gpu.canvas;
+        if (!canvas) return;
+
+        const onMove = (e: PointerEvent) => {
+          const rect = canvas.getBoundingClientRect();
+          setUserContext('mouse', {
+            x: (e.clientX - rect.left) / rect.width,
+            y: 1.0 - (e.clientY - rect.top) / rect.height
+          }, { existing: 'replace' });
+        };
+
+        canvas.addEventListener('pointermove', onMove);
+        return () => canvas.removeEventListener('pointermove', onMove);
+      }, [canvas, setUserContext]);
+
+      return null;
+    }
+    ```
+
+    ```tsx
+    // ShaderUpdater.tsx — reads mouse from user context in useFrame
+    import { useFrame } from '@motion-core/motion-gpu/react';
+    import { useMotionGPUUserContext } from '@motion-core/motion-gpu/react/advanced';
+
+    type Mouse = { x: number; y: number };
+
+    export function ShaderUpdater() {
+      const mouse = useMotionGPUUserContext<Mouse>('mouse');
+
+      useFrame((state) => {
+        const m = mouse.current;
+        if (m) {
+          state.setUniform('uMouse', [m.x, m.y]);
+        }
+        state.setUniform('uTime', state.time);
+      });
+
+      return null;
+    }
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## Return type reference
+
+| Call | Return type |
+|---|---|
+| `useMotionGPUUserContext()` | `CurrentReadable<Record<string \| symbol, unknown>>` |
+| `useMotionGPUUserContext(namespace)` | `CurrentReadable<T \| undefined>` |
+| `useSetMotionGPUUserContext()` *(React)* | `(namespace, value, options?) => T \| undefined` |
+| `setMotionGPUUserContext(namespace, value, options?)` | `T \| undefined` |
+
+## Under the hood
+
+User context is backed by the `user` `CurrentWritable` store from `useMotionGPU()`. Reading returns derived views of that store. Writing calls `userStore.update()` with the conflict-resolution logic applied synchronously. Because `CurrentReadable.current` provides a synchronous snapshot, you can safely read user context inside `useFrame` callbacks without subscribing reactively.

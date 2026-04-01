@@ -1,0 +1,441 @@
+---
+title: "Frame Scheduler"
+description: "Register per-frame callbacks, control task ordering, invalidation modes, and profiling with the useFrame API."
+---
+
+The frame scheduler coordinates all per-frame logic inside `FragCanvas`. Every `useFrame` callback is registered as a **task** with an explicit key, a stage, dependency edges, and an invalidation policy. The scheduler resolves execution order via topological sort, runs tasks each frame, and decides whether the renderer should submit a frame based on the active render mode.
+
+## Basic usage
+
+```svelte
+<script lang="ts">
+  import { useFrame } from '@motion-core/motion-gpu/svelte';
+
+  useFrame((state) => {
+    state.setUniform('uTime', state.time);
+    state.setUniform('uMouse', [0.5, 0.5]);
+  });
+</script>
+```
+
+`useFrame` must be called inside the `FragCanvas` component tree. The task is automatically unregistered when the component is destroyed.
+
+## useFrame overloads
+
+| Signature | Description |
+|---|---|
+| `useFrame(callback, options?)` | Auto-generated opaque task key |
+| `useFrame(key, callback, options?)` | Explicit stable key — required for `before`/`after` dependencies |
+
+```typescript
+// Anonymous task
+useFrame((state) => { /* ... */ });
+
+// Named task
+useFrame('camera-update', (state) => { /* ... */ });
+
+// Named task with options
+useFrame('particles', (state) => { /* ... */ }, {
+  stage: particleStage,
+  autoInvalidate: false
+});
+```
+
+## Return value — UseFrameResult
+
+`useFrame` returns a handle for controlling the task lifecycle:
+
+<ParamField path="task" type="{ key: FrameKey; stage: FrameKey }">
+  Task and stage identifiers. Pass `task` to `before`/`after` options of other `useFrame` calls to declare ordering dependencies.
+</ParamField>
+
+<ParamField path="start()" type="() => void">
+  Resumes the task. Has no effect if already running.
+</ParamField>
+
+<ParamField path="stop()" type="() => void">
+  Pauses the task. The task stays registered in the schedule but is skipped each frame.
+</ParamField>
+
+<ParamField path="started" type="CurrentReadable<boolean>">
+  Reactive store reflecting the effective running state (combines `stop()`/`start()` and the `running` gate).
+</ParamField>
+
+```typescript
+const handle = useFrame('animation', (state) => {
+  state.setUniform('uTime', state.time);
+});
+
+// Pause
+handle.stop();
+
+// Resume
+handle.start();
+```
+
+---
+
+## FrameState — the callback argument
+
+Every frame callback receives a `FrameState` object:
+
+<ParamField path="time" type="number">
+  `requestAnimationFrame` timestamp in seconds (monotonic clock from page load).
+</ParamField>
+
+<ParamField path="delta" type="number">
+  Time since the last frame in seconds, clamped by `maxDelta`.
+</ParamField>
+
+<ParamField path="canvas" type="HTMLCanvasElement">
+  The active canvas element.
+</ParamField>
+
+<ParamField path="renderMode" type="'always' | 'on-demand' | 'manual'">
+  Current render scheduling mode.
+</ParamField>
+
+<ParamField path="autoRender" type="boolean">
+  Whether automatic rendering is currently enabled.
+</ParamField>
+
+<ParamField path="setUniform(name, value)" type="function">
+  Set a runtime uniform override for the current frame.
+</ParamField>
+
+<ParamField path="setTexture(name, value)" type="function">
+  Set a runtime texture source for the current frame.
+</ParamField>
+
+<ParamField path="writeStorageBuffer(name, data, options?)" type="function">
+  Queue a CPU → GPU write into a declared storage buffer.
+</ParamField>
+
+<ParamField path="readStorageBuffer(name)" type="Promise<ArrayBuffer>">
+  Async GPU → CPU readback from a declared storage buffer.
+</ParamField>
+
+<ParamField path="invalidate(token?)" type="function">
+  Mark the frame as dirty in `on-demand` render mode.
+</ParamField>
+
+<ParamField path="advance()" type="function">
+  Request exactly one render in `manual` render mode.
+</ParamField>
+
+---
+
+## UseFrameOptions
+
+<ParamField path="autoStart" type="boolean" default="true">
+  Whether the task starts in an active state. Set to `false` to register a task that starts paused.
+</ParamField>
+
+<ParamField path="autoInvalidate" type="boolean" default="true">
+  When `true`, task execution automatically invalidates the frame in `on-demand` render mode. Set to `false` to use explicit `invalidation` policies instead.
+</ParamField>
+
+<ParamField path="invalidation" type="FrameTaskInvalidation">
+  Explicit invalidation policy. Overrides `autoInvalidate` when set. See [Invalidation modes](#invalidation-modes) below.
+</ParamField>
+
+<ParamField path="stage" type="FrameKey | FrameStage">
+  Which stage to assign this task to. Defaults to the main stage. When `before`/`after` references a task in a different stage, the stage is inferred automatically.
+</ParamField>
+
+<ParamField path="before" type="(FrameKey | FrameTask) | (FrameKey | FrameTask)[]">
+  This task must run **before** the referenced task(s). Accepts a single reference or an array.
+</ParamField>
+
+<ParamField path="after" type="(FrameKey | FrameTask) | (FrameKey | FrameTask)[]">
+  This task must run **after** the referenced task(s). Accepts a single reference or an array.
+</ParamField>
+
+<ParamField path="running" type="() => boolean">
+  Dynamic gate evaluated each frame. The task is skipped (not removed) when this returns `false`.
+</ParamField>
+
+---
+
+## Invalidation modes
+
+Invalidation controls whether running a task causes the renderer to submit a frame in `on-demand` render mode.
+
+### Simple string values
+
+| Value | Behavior |
+|---|---|
+| `'never'` | This task never triggers a re-render |
+| `'always'` | This task always triggers a re-render when it runs |
+
+### Object policies
+
+```typescript
+// Always invalidate with a stable token
+useFrame('background', (state) => { /* ... */ }, {
+  invalidation: { mode: 'always', token: 'background-task' }
+});
+
+// Never invalidate (manual control)
+useFrame('analytics', (state) => { /* ... */ }, {
+  invalidation: { mode: 'never' }
+});
+
+// Only invalidate when the token value changes
+useFrame('color-sync', (state) => {
+  state.setUniform('uColor', currentColor);
+}, {
+  autoInvalidate: false,
+  invalidation: {
+    mode: 'on-change',
+    token: () => currentColor.join(',')
+  }
+});
+```
+
+### `on-change` semantics
+
+With `on-change`, the scheduler compares the resolved token value against the previous frame's value. Invalidation fires **only when they differ**. This is efficient for state-driven updates where you want to render exactly once per state change.
+
+```typescript
+let hue = $state(0);
+
+useFrame('hue-sync', (state) => {
+  state.setUniform('uHue', hue);
+}, {
+  invalidation: {
+    mode: 'on-change',
+    token: () => hue
+  }
+});
+```
+
+<Note>
+  `on-change` requires a `token`. Omitting the token when `mode: 'on-change'` is set throws an error.
+</Note>
+
+---
+
+## Task ordering with before and after
+
+Use `before` and `after` to declare execution dependencies between tasks. The scheduler performs a topological sort to resolve the execution order within each stage.
+
+```typescript
+const physics = useFrame('physics', (state) => {
+  // Update simulation state
+});
+
+const renderSync = useFrame('render-sync', (state) => {
+  // Read physics output, set uniforms
+  state.setUniform('uPositions', /* ... */);
+}, {
+  after: physics.task  // runs after 'physics'
+});
+
+const postProcess = useFrame('post', (state) => {
+  // Always runs last
+}, {
+  after: [physics.task, renderSync.task]
+});
+```
+
+<Warning>
+  Circular dependencies throw a deterministic error at schedule resolution time. Missing `before`/`after` references also throw. Use explicit string keys to make dependency declarations readable.
+</Warning>
+
+---
+
+## Custom stages
+
+Stages let you group tasks and control stage execution order independently from task ordering. Create a stage with `useMotionGPU().scheduler.createStage()`.
+
+<Tabs>
+  <Tab title="Svelte">
+    ```svelte
+    <script lang="ts">
+      import { useFrame, useMotionGPU } from '@motion-core/motion-gpu/svelte';
+
+      const gpu = useMotionGPU();
+
+      // Create a 'physics' stage that runs before the default main stage
+      const physicsStage = gpu.scheduler.createStage('physics', {
+        before: 'main'
+      });
+
+      // Assign tasks to the stage
+      useFrame('integrate', (state) => {
+        // Physics integration runs before main tasks
+      }, { stage: physicsStage });
+
+      useFrame('uniforms', (state) => {
+        // This runs in the default main stage, after physics stage
+        state.setUniform('uTime', state.time);
+      });
+    </script>
+    ```
+  </Tab>
+  <Tab title="React">
+    ```tsx
+    import { useFrame, useMotionGPU } from '@motion-core/motion-gpu/react';
+    import { useMemo } from 'react';
+
+    function StageExample() {
+      const gpu = useMotionGPU();
+
+      const physicsStage = useMemo(() =>
+        gpu.scheduler.createStage('physics', { before: 'main' }),
+        [gpu.scheduler]
+      );
+
+      useFrame('integrate', (state) => {
+        // Physics stage
+      }, { stage: physicsStage });
+
+      useFrame('uniforms', (state) => {
+        state.setUniform('uTime', state.time);
+      });
+
+      return null;
+    }
+    ```
+  </Tab>
+</Tabs>
+
+### createStage options
+
+<ParamField path="before" type="(FrameKey | FrameStage) | (FrameKey | FrameStage)[]">
+  This stage must run before the referenced stage(s).
+</ParamField>
+
+<ParamField path="after" type="(FrameKey | FrameStage) | (FrameKey | FrameStage)[]">
+  This stage must run after the referenced stage(s).
+</ParamField>
+
+<ParamField path="callback" type="FrameStageCallback | null">
+  Optional custom orchestration callback: `(state, runTasks) => void`. Call `runTasks()` to execute the stage's tasks. Useful for wrapping all tasks in a measurement or profiling block.
+</ParamField>
+
+---
+
+## Scheduler presets
+
+The advanced entrypoint exports `applySchedulerPreset()` for applying named configuration presets to the scheduler.
+
+```typescript
+// Svelte
+import { applySchedulerPreset } from '@motion-core/motion-gpu/svelte/advanced';
+
+// React
+import { applySchedulerPreset } from '@motion-core/motion-gpu/react/advanced';
+```
+
+| Preset | `diagnosticsEnabled` | `profilingEnabled` | `profilingWindow` |
+|---|---|---|---|
+| `'performance'` | `false` | `false` | 60 frames |
+| `'balanced'` | `true` | `true` | 120 frames |
+| `'debug'` | `true` | `true` | 240 frames |
+
+```typescript
+const gpu = useMotionGPU();
+
+// Apply preset
+applySchedulerPreset(gpu.scheduler, 'debug');
+
+// Apply with overrides
+applySchedulerPreset(gpu.scheduler, 'balanced', {
+  profilingWindow: 60
+});
+```
+
+<Note>
+  Diagnostics and profiling share the same internal toggle. Both `diagnosticsEnabled` and `profilingEnabled` must match when using `ApplySchedulerPresetOptions`. Mismatching values throw an error.
+</Note>
+
+---
+
+## Diagnostics and profiling
+
+The scheduler has built-in frame timing measurement. Enable it to collect per-stage and per-task timing data.
+
+### Direct scheduler API
+
+Access the scheduler through `useMotionGPU().scheduler`:
+
+```typescript
+const gpu = useMotionGPU();
+const scheduler = gpu.scheduler;
+
+// Enable profiling
+scheduler.setProfilingEnabled(true);
+scheduler.setProfilingWindow(120);  // Keep 120 frames of history
+
+// Inspect the resolved execution order
+const schedule = scheduler.getSchedule();
+// { stages: [{ key: 'main', tasks: ['physics', 'render-sync'] }] }
+
+// Get timing for the last frame
+const lastRun = scheduler.getLastRunTimings();
+// { total: 1.2, stages: { main: { duration: 1.1, tasks: { physics: 0.6, 'render-sync': 0.5 } } } }
+
+// Get aggregated profiling stats over the window
+const snapshot = scheduler.getProfilingSnapshot();
+// { window: 120, frameCount: 120, total: { last, avg, min, max, count }, stages: { ... } }
+```
+
+### captureSchedulerDebugSnapshot
+
+For convenience, `captureSchedulerDebugSnapshot()` returns everything at once:
+
+```typescript
+import { captureSchedulerDebugSnapshot } from '@motion-core/motion-gpu/svelte/advanced';
+// or from '@motion-core/motion-gpu/react/advanced'
+
+const snapshot = captureSchedulerDebugSnapshot(gpu.scheduler);
+// {
+//   diagnosticsEnabled: boolean,
+//   profilingEnabled: boolean,
+//   profilingWindow: number,
+//   schedule: FrameScheduleSnapshot,
+//   lastRunTimings: FrameRunTimings | null,
+//   profilingSnapshot: FrameProfilingSnapshot | null
+// }
+```
+
+<Tip>
+  Use `captureSchedulerDebugSnapshot` in a debug panel or browser console to inspect exactly which tasks are running, in what order, and how long they take.
+</Tip>
+
+### SchedulerDebugSnapshot shape
+
+<ParamField path="diagnosticsEnabled" type="boolean">
+  Whether diagnostics/profiling capture is active.
+</ParamField>
+
+<ParamField path="profilingEnabled" type="boolean">
+  Whether frame timing collection is active.
+</ParamField>
+
+<ParamField path="profilingWindow" type="number">
+  Number of frames in the rolling timing history.
+</ParamField>
+
+<ParamField path="schedule" type="FrameScheduleSnapshot">
+  Resolved stage/task execution order: `{ stages: [{ key, tasks: string[] }] }`.
+</ParamField>
+
+<ParamField path="lastRunTimings" type="FrameRunTimings | null">
+  Per-task and per-stage millisecond timings from the most recent frame.
+</ParamField>
+
+<ParamField path="profilingSnapshot" type="FrameProfilingSnapshot | null">
+  Aggregated statistics (last, avg, min, max, count) over the profiling window.
+</ParamField>
+
+---
+
+## Task lifecycle
+
+- `useFrame` **auto-unregisters** the task when the component is destroyed via adapter lifecycle cleanup.
+- `stop()` / `start()` **pause and resume** without unregistering. The task remains in the schedule and is simply skipped each frame.
+- The `running` gate is evaluated on every frame tick — returning `false` skips execution without removing the task.
+- Re-registering the same explicit key replaces the previous registration. Stale unsubscribe handlers from the replaced task will not remove the newer one.

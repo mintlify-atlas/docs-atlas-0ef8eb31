@@ -1,0 +1,105 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "Motion GPU",
+  "projectDescription": "A tiny WebGPU runtime for writing Shadertoy-style fullscreen WGSL shaders in React and Svelte 5 applications.",
+  "theme": "luma",
+  "primaryColor": "#fc6c04",
+  "lightColor": "#fcb47c",
+  "darkColor": null,
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "getting-started",
+              "concepts"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "guides/materials",
+              "guides/writing-shaders",
+              "guides/uniforms-and-textures",
+              "guides/render-modes",
+              "guides/render-passes",
+              "guides/render-targets"
+            ]
+          },
+          {
+            "group": "Advanced Guides",
+            "pages": [
+              "guides/compute-shaders",
+              "guides/storage-buffers",
+              "guides/frame-scheduler",
+              "guides/user-context",
+              "guides/error-handling"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Components",
+            "pages": [
+              "api/frag-canvas",
+              "api/passes"
+            ]
+          },
+          {
+            "group": "Hooks & Functions",
+            "pages": [
+              "api/define-material",
+              "api/hooks",
+              "api/advanced"
+            ]
+          },
+          {
+            "group": "Types",
+            "pages": [
+              "api/types",
+              "api/changelog"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Fullscreen WebGPU renderer for native WGSL fragment shaders",
+    "React 18+ and Svelte 5 adapter entrypoints with identical APIs",
+    "Frame scheduler with task ordering, stages, invalidation modes, and profiling",
+    "Render graph with built-in ShaderPass, BlitPass, CopyPass post-process passes",
+    "GPU compute passes with ComputePass and PingPongComputePass for simulations",
+    "Named render targets for multi-pass pipelines",
+    "Runtime uniform, texture, and storage buffer updates without pipeline rebuilds",
+    "Structured error normalization with built-in overlay UI",
+    "Framework-agnostic core for building custom adapters"
+  ],
+  "publicApiSurface": [
+    "defineMaterial(input: FragMaterialInput): FragMaterial",
+    "resolveMaterial(material: FragMaterial): ResolvedMaterial",
+    "<FragCanvas material={...} passes={[...]} />",
+    "useFrame(callback, options?): UseFrameResult",
+    "useMotionGPU(): MotionGPUContext",
+    "useTexture(urlOrOptions): UseTextureResult",
+    "new ShaderPass({ fragment })",
+    "new BlitPass(options?)",
+    "new CopyPass(options?)",
+    "new ComputePass({ compute, dispatch? })",
+    "new PingPongComputePass({ compute, iterations, target })",
+    "applySchedulerPreset(scheduler, preset, options?)",
+    "captureSchedulerDebugSnapshot(scheduler): SchedulerDebugSnapshot",
+    "useMotionGPUUserContext() / setMotionGPUUserContext()",
+    "loadTexturesFromUrls(urls, options?): Promise<LoadedTexture[]>",
+    "createMotionGPURuntimeLoop(options): MotionGPURuntimeLoop",
+    "createFrameRegistry(): FrameRegistry",
+    "toMotionGPUErrorReport(error): MotionGPUErrorReport"
+  ]
+}

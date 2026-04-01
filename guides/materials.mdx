@@ -1,0 +1,277 @@
+---
+title: "Defining materials"
+description: "Create immutable, validated materials with defineMaterial — the entry point for every Motion GPU shader."
+keywords: ["defineMaterial", "FragMaterial", "material", "WGSL", "fragment shader", "uniforms", "textures", "defines", "includes", "storageBuffers"]
+---
+
+`defineMaterial()` is the entry point for creating materials in Motion GPU. It validates your inputs, freezes the result, and produces an immutable `FragMaterial` object that `FragCanvas` uses to build the WebGPU rendering pipeline.
+
+## Basic usage
+
+```typescript
+import { defineMaterial } from '@motion-core/motion-gpu';
+
+const material = defineMaterial({
+  fragment: `
+fn frag(uv: vec2f) -> vec4f {
+  return vec4f(uv.x, uv.y, 0.5, 1.0);
+}
+`
+});
+```
+
+## The fragment contract
+
+Every material **must** declare exactly this function:
+
+```wgsl
+fn frag(uv: vec2f) -> vec4f
+```
+
+- **`uv`** — normalized coordinates from `(0, 0)` at the bottom-left to `(1, 1)` at the top-right.
+- **Return value** — an RGBA color. Use `1.0` for the alpha channel for opaque output.
+
+`defineMaterial()` validates this contract at definition time and throws immediately with targeted errors for:
+
+- missing `frag` entry point
+- wrong parameter list (must be exactly `uv: vec2f`)
+- wrong return type (must be `vec4f`)
+
+<Warning>
+  If you pass an object not created by `defineMaterial()` to `FragCanvas`, the renderer throws. Always use `defineMaterial()` to create materials.
+</Warning>
+
+## All fields
+
+<ParamField path="fragment" type="string" required>
+  WGSL fragment source containing `fn frag(uv: vec2f) -> vec4f`. Must be a non-empty string.
+</ParamField>
+
+<ParamField path="uniforms" type="UniformMap">
+  Named uniform declarations with initial values. Each key becomes a field on the `motiongpuUniforms` struct in WGSL. See [Uniforms and Textures](/guides/uniforms-and-textures).
+</ParamField>
+
+<ParamField path="textures" type="TextureDefinitionMap">
+  Named texture declarations with sampler and upload configuration. Each key `uFoo` creates `uFoo: texture_2d<f32>` and `uFooSampler: sampler` bindings in WGSL. See [Uniforms and Textures](/guides/uniforms-and-textures).
+</ParamField>
+
+<ParamField path="defines" type="MaterialDefines">
+  Compile-time constants injected as WGSL `const` declarations before your fragment source. Changing a define value triggers a full pipeline rebuild. See [Compile-time defines](#compile-time-defines).
+</ParamField>
+
+<ParamField path="includes" type="MaterialIncludes">
+  Named WGSL source chunks expanded by `#include <name>` directives in your fragment source. Useful for shared utility code like noise functions and SDF helpers.
+</ParamField>
+
+<ParamField path="storageBuffers" type="StorageBufferDefinitionMap">
+  Named GPU storage buffer declarations for compute or fragment shader access. Each buffer must have `size` (bytes, multiple of 4), `type`, and an optional `access` mode.
+</ParamField>
+
+## Compile-time defines vs runtime uniforms
+
+Motion GPU has two mechanisms for passing values to shaders. Choose based on whether the value changes during the lifetime of the pipeline:
+
+<CardGroup cols={2}>
+  <Card title="Compile-time defines" icon="bolt">
+    Injected as WGSL `const` declarations. Changing the value requires a full pipeline rebuild. Use for constants that affect shader structure (thresholds, loop counts, feature flags).
+  </Card>
+  <Card title="Runtime uniforms" icon="arrows-rotate">
+    Packed into a GPU uniform buffer. Changing the value is a cheap buffer write — no rebuild. Use for values that change per frame (time, mouse position, colors).
+  </Card>
+</CardGroup>
+
+```typescript
+const material = defineMaterial({
+  fragment: `
+fn frag(uv: vec2f) -> vec4f {
+  // EDGE_WIDTH is a WGSL const — compiler can eliminate dead code paths
+  let edge = smoothstep(EDGE_WIDTH, 0.0, length(uv - 0.5) - 0.3);
+  // motiongpuUniforms.uColor is a runtime value — updated per frame
+  return vec4f(motiongpuUniforms.uColor * edge, edge);
+}
+`,
+  uniforms: {
+    uColor: [0.2, 0.8, 1.0]
+  },
+  defines: {
+    EDGE_WIDTH: 0.003
+  }
+});
+```
+
+Defines support `boolean`, `number` (inferred as `f32`), and explicitly typed values:
+
+```typescript
+defines: {
+  SHOW_GRID: true,                              // bool const
+  GRID_SIZE: 8.0,                               // f32 const (inferred)
+  STEPS: { type: 'u32', value: 32 },            // u32 const (explicit)
+  BIAS: { type: 'f32', value: 0.001 }           // f32 const (explicit)
+}
+```
+
+## Using includes
+
+The `includes` field lets you define named WGSL chunks and reference them via `#include <name>` in your fragment source:
+
+```typescript
+const material = defineMaterial({
+  fragment: `
+#include <sdf>
+
+fn frag(uv: vec2f) -> vec4f {
+  let d = sdCircle(uv - 0.5, 0.25);
+  let edge = smoothstep(0.005, 0.0, d);
+  return vec4f(vec3f(edge), 1.0);
+}
+`,
+  includes: {
+    sdf: `
+fn sdCircle(p: vec2f, r: f32) -> f32 {
+  return length(p) - r;
+}
+`
+  }
+});
+```
+
+Include names must be valid WGSL identifiers (`[A-Za-z_][A-Za-z0-9_]*`). Empty include sources throw at definition time.
+
+## Immutability and caching
+
+The returned `FragMaterial` is frozen with `Object.freeze`. Its `uniforms`, `textures`, `defines`, `includes`, and `storageBuffers` sub-objects are also frozen.
+
+This immutability is critical for Motion GPU's pipeline caching. The renderer computes a **deterministic signature** from the material once and uses it to detect when a GPU pipeline rebuild is needed.
+
+The signature is derived from:
+
+1. The preprocessed fragment WGSL (after include/define expansion)
+2. The uniform layout (sorted name/type sequence)
+3. The texture key list (sorted) with normalized sampler config
+4. The storage buffer key list (sorted) with size, type, and access mode
+
+| Change | Triggers rebuild? |
+| --- | --- |
+| Fragment shader text change | Yes |
+| Adding or removing a uniform | Yes |
+| Adding or removing a texture | Yes |
+| Changing a define value | Yes |
+| Changing texture sampler config | Yes |
+| Adding or removing a storage buffer | Yes |
+| Changing a uniform value at runtime | No — buffer update only |
+| Changing a texture source at runtime | No — upload only |
+
+<Tip>
+  Keep material objects stable. Reuse the same `defineMaterial()` result rather than recreating it on each render. Creating a new material with identical content still matches the same signature, but avoids unnecessary allocations.
+</Tip>
+
+## Full example
+
+```typescript
+const material = defineMaterial({
+  fragment: `
+#include <sdf>
+
+fn frag(uv: vec2f) -> vec4f {
+  let aspect = motiongpuFrame.resolution.x / motiongpuFrame.resolution.y;
+  var p = uv - 0.5;
+  p.x *= aspect;
+
+  let d = sdCircle(p, 0.2 + 0.05 * sin(motiongpuUniforms.uTime * 3.0));
+  let edge = smoothstep(EDGE_WIDTH, 0.0, abs(d));
+
+  let texColor = textureSample(uBackground, uBackgroundSampler, uv);
+  let finalColor = mix(texColor.rgb, motiongpuUniforms.uColor, edge);
+  return vec4f(finalColor, 1.0);
+}
+`,
+  uniforms: {
+    uTime:  0,
+    uColor: [0.2, 0.8, 1.0]
+  },
+  textures: {
+    uBackground: {
+      filter: 'linear',
+      addressModeU: 'repeat',
+      addressModeV: 'repeat'
+    }
+  },
+  defines: {
+    EDGE_WIDTH: 0.003
+  },
+  includes: {
+    sdf: `
+fn sdCircle(p: vec2f, r: f32) -> f32 {
+  return length(p) - r;
+}
+`
+  }
+});
+```
+
+## Rendering the material
+
+Pass the material to `FragCanvas` from the Svelte or React adapter:
+
+<Tabs>
+  <Tab title="Svelte">
+    ```svelte App.svelte
+    <script lang="ts">
+      import { FragCanvas, defineMaterial } from '@motion-core/motion-gpu/svelte';
+
+      const material = defineMaterial({
+        fragment: `
+    fn frag(uv: vec2f) -> vec4f {
+      return vec4f(uv.x, uv.y, 0.5, 1.0);
+    }
+    `
+      });
+    </script>
+
+    <div style="width: 100vw; height: 100vh;">
+      <FragCanvas {material} />
+    </div>
+    ```
+  </Tab>
+  <Tab title="React">
+    ```tsx App.tsx
+    import { FragCanvas, defineMaterial } from '@motion-core/motion-gpu/react';
+
+    const material = defineMaterial({
+      fragment: `
+    fn frag(uv: vec2f) -> vec4f {
+      return vec4f(uv.x, uv.y, 0.5, 1.0);
+    }
+    `
+    });
+
+    export function App() {
+      return (
+        <div style={{ width: '100vw', height: '100vh' }}>
+          <FragCanvas material={material} />
+        </div>
+      );
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Validation errors
+
+`defineMaterial()` throws immediately for any of these conditions:
+
+| Invalid input | Result |
+| --- | --- |
+| Missing `fn frag(uv: vec2f) -> vec4f` entry point | Throws |
+| Wrong parameter list for `frag` | Throws |
+| Wrong return type for `frag` | Throws |
+| Invalid identifier in uniforms, textures, defines, or includes | Throws |
+| Invalid uniform value shape (for example, 5-element array) | Throws |
+| Non-finite define number | Throws |
+| Fractional `i32` or `u32` define | Throws |
+| Negative `u32` define | Throws |
+| Empty include source | Throws |
+| Storage buffer `size <= 0` or not a multiple of 4 | Throws |
+| Invalid storage buffer type or access mode | Throws |
+| Storage buffer `initialData` exceeds declared `size` | Throws |
+| Storage texture with `storage: true` missing `format` | Throws |

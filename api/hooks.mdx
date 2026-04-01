@@ -1,0 +1,560 @@
+---
+title: "Hooks"
+description: "Runtime hooks for frame callbacks, context access, and texture loading in Svelte and React."
+---
+
+All hooks in this page must be called inside the `<FragCanvas>` component subtree, except
+`useTexture`, which can be used anywhere.
+
+## Entrypoints
+
+| Entrypoint | Exports |
+| --- | --- |
+| `@motion-core/motion-gpu/svelte` | `useFrame`, `useMotionGPU`, `useTexture` |
+| `@motion-core/motion-gpu/svelte/advanced` | All of the above + `useMotionGPUUserContext`, `setMotionGPUUserContext` |
+| `@motion-core/motion-gpu/react` | `useFrame`, `useMotionGPU`, `useTexture` |
+| `@motion-core/motion-gpu/react/advanced` | All of the above + `useMotionGPUUserContext`, `useSetMotionGPUUserContext`, `setMotionGPUUserContext` |
+
+---
+
+## `useFrame`
+
+Registers a per-frame callback in the active `FragCanvas` scheduler. Auto-unsubscribes
+on component destroy (Svelte) or unmount (React).
+
+### Signatures
+
+```typescript
+// Auto-generated task key
+useFrame(callback: (state: FrameState) => void, options?: UseFrameOptions): UseFrameResult
+
+// Explicit task key
+useFrame(
+  key: FrameKey,
+  callback: (state: FrameState) => void,
+  options?: UseFrameOptions
+): UseFrameResult
+```
+
+`FrameKey` is `string | symbol`.
+
+<Warning>
+  Must be called inside a `<FragCanvas>` subtree. Throws with `"useFrame must be
+  used inside <FragCanvas>"` otherwise.
+</Warning>
+
+### `FrameState`
+
+The `state` object passed to every frame callback on each tick.
+
+<ResponseField name="time" type="number">
+  Elapsed time in seconds since the animation started.
+</ResponseField>
+<ResponseField name="delta" type="number">
+  Time in seconds since the last frame. Clamped to `maxDelta` (default `0.1`).
+</ResponseField>
+<ResponseField name="canvas" type="HTMLCanvasElement">
+  The active canvas element managed by `FragCanvas`.
+</ResponseField>
+<ResponseField name="renderMode" type="'always' | 'on-demand' | 'manual'">
+  Current render scheduling mode.
+</ResponseField>
+<ResponseField name="autoRender" type="boolean">
+  Whether automatic rendering is globally enabled.
+</ResponseField>
+<ResponseField name="setUniform" type="(name: string, value: UniformValue) => void">
+  Sets a uniform value for the current or next frame. Throws if `name` is not declared in
+  the material's `uniforms` map.
+</ResponseField>
+<ResponseField name="setTexture" type="(name: string, value: TextureValue) => void">
+  Sets a texture value for the current or next frame. Throws if `name` is not declared in
+  the material's `textures` map.
+</ResponseField>
+<ResponseField name="writeStorageBuffer" type="(name: string, data: ArrayBufferView, options?: { offset?: number }) => void">
+  Queues a write to a named storage buffer. The write is flushed before the next GPU
+  render call. Throws on out-of-bounds access.
+</ResponseField>
+<ResponseField name="readStorageBuffer" type="(name: string) => Promise<ArrayBuffer>">
+  Async GPU readback of a named storage buffer's current contents. Requires an initialized
+  renderer and allocated GPU buffer.
+</ResponseField>
+<ResponseField name="invalidate" type="(token?: FrameInvalidationToken) => void">
+  Marks the frame as invalidated for `on-demand` render mode. No-op in `always` mode.
+  Accepts an optional token (`string | number | symbol`) for deduplication.
+</ResponseField>
+<ResponseField name="advance" type="() => void">
+  Requests a single frame render in `manual` render mode.
+</ResponseField>
+
+### `UseFrameOptions`
+
+<ParamField path="autoStart" type="boolean" default="true">
+  Whether the task starts in an active (running) state.
+</ParamField>
+
+<ParamField path="autoInvalidate" type="boolean" default="true">
+  Whether executing this task automatically invalidates the frame. Set to `false` for
+  read-only tasks that should not trigger re-renders in `on-demand` mode.
+</ParamField>
+
+<ParamField path="invalidation" type="FrameTaskInvalidation">
+  Explicit invalidation policy. Overrides `autoInvalidate` when set.
+
+  <Expandable title="FrameTaskInvalidation variants">
+    - `'never'` — task never invalidates
+    - `'always'` — task always invalidates (default when `autoInvalidate` is `true`)
+    - `{ mode?: 'never' | 'always', token?: FrameTaskInvalidationToken }` — with optional token
+    - `{ mode: 'on-change', token: FrameTaskInvalidationToken }` — only invalidates when
+      the token value changes between frames. `token` is required in this variant.
+
+    `FrameTaskInvalidationToken` is `string | number | symbol | (() => string | number | symbol | null | undefined)`.
+  </Expandable>
+</ParamField>
+
+<ParamField path="stage" type="FrameKey | FrameStage">
+  Stage to register this task in. Defaults to the main stage. Use `scheduler.createStage`
+  from `useMotionGPU().scheduler` to define custom stages.
+</ParamField>
+
+<ParamField path="before" type="(FrameKey | FrameTask) | (FrameKey | FrameTask)[]">
+  Tasks or keys that must run **after** this task (this task runs first).
+  References to missing tasks throw at schedule resolution time.
+</ParamField>
+
+<ParamField path="after" type="(FrameKey | FrameTask) | (FrameKey | FrameTask)[]">
+  Tasks or keys that must run **before** this task (this task runs last).
+  References to missing tasks throw at schedule resolution time.
+</ParamField>
+
+<ParamField path="running" type="() => boolean">
+  Dynamic predicate evaluated each frame. When it returns `false`, the task is skipped
+  for that frame without unregistering it.
+</ParamField>
+
+### `UseFrameResult`
+
+<ResponseField name="task" type="FrameTask">
+  Registered task metadata with `key` and `stage` fields.
+</ResponseField>
+<ResponseField name="start" type="() => void">
+  Resumes task execution if it was stopped.
+</ResponseField>
+<ResponseField name="stop" type="() => void">
+  Pauses task execution without unregistering it.
+</ResponseField>
+<ResponseField name="started" type="Subscribable<boolean>">
+  Reactive readable store reflecting the effective running state (combines `start`/`stop`
+  state with the `running` predicate).
+</ResponseField>
+
+### Examples
+
+<Tabs>
+  <Tab title="Svelte">
+```svelte
+<script>
+  import { useFrame } from '@motion-core/motion-gpu/svelte';
+
+  const { start, stop } = useFrame((state) => {
+    state.setUniform('time', state.time);
+  });
+</script>
+```
+  </Tab>
+  <Tab title="React">
+```tsx
+import { useFrame } from '@motion-core/motion-gpu/react';
+
+function AnimatedLayer() {
+  useFrame((state) => {
+    state.setUniform('time', state.time);
+  });
+  return null;
+}
+```
+  </Tab>
+</Tabs>
+
+#### Explicit key and ordering
+
+<Tabs>
+  <Tab title="Svelte">
+```svelte
+<script>
+  import { useFrame } from '@motion-core/motion-gpu/svelte';
+
+  const physics = useFrame('physics', (state) => {
+    // runs first
+  });
+
+  useFrame('render', (state) => {
+    // runs after physics
+  }, { after: 'physics' });
+</script>
+```
+  </Tab>
+  <Tab title="React">
+```tsx
+import { useFrame } from '@motion-core/motion-gpu/react';
+
+function Scene() {
+  const physics = useFrame('physics', (state) => {
+    // runs first
+  });
+
+  useFrame('render', (state) => {
+    // runs after physics
+  }, { after: 'physics' });
+
+  return null;
+}
+```
+  </Tab>
+</Tabs>
+
+#### On-demand invalidation with a token
+
+<Tabs>
+  <Tab title="Svelte">
+```svelte
+<script>
+  import { useFrame } from '@motion-core/motion-gpu/svelte';
+
+  let value = $state(0);
+
+  useFrame((state) => {
+    state.setUniform('myValue', value);
+  }, {
+    invalidation: {
+      mode: 'on-change',
+      token: () => value
+    }
+  });
+</script>
+```
+  </Tab>
+  <Tab title="React">
+```tsx
+import { useRef } from 'react';
+import { useFrame } from '@motion-core/motion-gpu/react';
+
+function Reactive({ value }: { value: number }) {
+  const valueRef = useRef(value);
+  valueRef.current = value;
+
+  useFrame((state) => {
+    state.setUniform('myValue', valueRef.current);
+  }, {
+    invalidation: {
+      mode: 'on-change',
+      token: () => valueRef.current
+    }
+  });
+  return null;
+}
+```
+  </Tab>
+</Tabs>
+
+---
+
+## `useMotionGPU`
+
+Returns the active `MotionGPUContext` provided by the enclosing `<FragCanvas>`.
+
+### Signature
+
+```typescript
+useMotionGPU(): MotionGPUContext
+```
+
+<Warning>
+  Must be called inside a `<FragCanvas>` subtree. Throws with `"useMotionGPU must be
+  used inside <FragCanvas>"` otherwise.
+</Warning>
+
+### `MotionGPUContext`
+
+<ResponseField name="canvas" type="HTMLCanvasElement | undefined">
+  The underlying canvas element managed by the renderer. May be `undefined` before the
+  canvas mounts.
+</ResponseField>
+<ResponseField name="size" type="CurrentReadable<{ width: number; height: number }>">
+  Reactive canvas CSS pixel size. Subscribe to react to resize events.
+</ResponseField>
+<ResponseField name="dpr" type="CurrentWritable<number>">
+  Device pixel ratio multiplier. Write to change resolution scaling.
+</ResponseField>
+<ResponseField name="maxDelta" type="CurrentWritable<number>">
+  Maximum frame delta in seconds passed to scheduled callbacks. Default is `0.1`.
+</ResponseField>
+<ResponseField name="renderMode" type="CurrentWritable<'always' | 'on-demand' | 'manual'>">
+  Active render scheduling mode. Write to switch modes reactively.
+</ResponseField>
+<ResponseField name="autoRender" type="CurrentWritable<boolean>">
+  Global toggle for automatic rendering. Set to `false` to pause all rendering.
+</ResponseField>
+<ResponseField name="user" type="CurrentWritable<Record<MotionGPUUserNamespace, unknown>>">
+  Namespaced shared user context store for the canvas subtree. Used by
+  `useMotionGPUUserContext` and `setMotionGPUUserContext`.
+</ResponseField>
+<ResponseField name="invalidate" type="() => void">
+  Marks the current frame as invalidated, scheduling a render in `on-demand` mode.
+</ResponseField>
+<ResponseField name="advance" type="() => void">
+  Requests a single manual frame render in `manual` mode.
+</ResponseField>
+<ResponseField name="scheduler" type="MotionGPUScheduler">
+  Public scheduler control surface. Exposes stage management and profiling/diagnostics APIs.
+
+  <Expandable title="MotionGPUScheduler methods">
+    - `createStage(key, options?)` — create or update a named scheduler stage
+    - `getStage(key)` — read stage metadata by key
+    - `setDiagnosticsEnabled(enabled)` / `getDiagnosticsEnabled()` — toggle per-frame timing capture
+    - `setProfilingEnabled(enabled)` / `getProfilingEnabled()` — toggle profiling
+    - `setProfilingWindow(window)` / `getProfilingWindow()` — set profiling history window in frames
+    - `resetProfiling()` — clear collected profiling samples
+    - `getLastRunTimings()` — last frame run timings snapshot (`FrameRunTimings | null`)
+    - `getSchedule()` — resolved stage/task execution order snapshot (`FrameScheduleSnapshot`)
+    - `getProfilingSnapshot()` — aggregated profiling statistics (`FrameProfilingSnapshot | null`)
+  </Expandable>
+</ResponseField>
+
+### Example
+
+<Tabs>
+  <Tab title="Svelte">
+```svelte
+<script>
+  import { useMotionGPU } from '@motion-core/motion-gpu/svelte';
+
+  const gpu = useMotionGPU();
+
+  function switchToOnDemand() {
+    gpu.renderMode.set('on-demand');
+  }
+
+  function pauseRendering() {
+    gpu.autoRender.set(false);
+  }
+</script>
+```
+  </Tab>
+  <Tab title="React">
+```tsx
+import { useMotionGPU } from '@motion-core/motion-gpu/react';
+
+function Controls() {
+  const gpu = useMotionGPU();
+
+  return (
+    <button onClick={() => gpu.renderMode.set('on-demand')}>
+      Switch to on-demand
+    </button>
+  );
+}
+```
+  </Tab>
+</Tabs>
+
+---
+
+## `useTexture`
+
+Loads one or more textures from URLs and exposes reactive loading and error state.
+Automatically cancels in-flight requests and disposes GPU resources on component
+destroy or unmount.
+
+<Tip>
+  `useTexture` does not require a `<FragCanvas>` parent. You can call it at the top level
+  of any component to preload textures before mounting a canvas.
+</Tip>
+
+### Signatures
+
+<Tabs>
+  <Tab title="Svelte">
+```typescript
+useTexture(
+  urlInput: string[] | (() => string[]),
+  optionsInput?: TextureLoadOptions | (() => TextureLoadOptions)
+): UseTextureResult
+```
+  </Tab>
+  <Tab title="React">
+```typescript
+useTexture(
+  urlInput: string[] | (() => string[]),
+  options?: TextureLoadOptions
+): UseTextureResult
+```
+  </Tab>
+</Tabs>
+
+<Note>
+  The Svelte adapter accepts a lazy `() => TextureLoadOptions` factory for `optionsInput`,
+  allowing options to be derived from reactive state. The React adapter accepts a plain
+  `TextureLoadOptions` object (update the `options` reference to trigger a reload).
+</Note>
+
+### `TextureLoadOptions`
+
+<ParamField path="colorSpace" type="'srgb' | 'linear'" default="'srgb'">
+  Desired texture color space. Affects bitmap decode color space conversion.
+</ParamField>
+
+<ParamField path="requestInit" type="RequestInit">
+  `fetch` options forwarded to the texture download request (headers, credentials, cache, etc.).
+</ParamField>
+
+<ParamField path="decode" type="TextureDecodeOptions">
+  Options forwarded to `createImageBitmap`.
+
+  <Expandable title="TextureDecodeOptions fields">
+    <ParamField path="colorSpaceConversion" type="'default' | 'none'" default="auto">
+      Controls color-space conversion during bitmap decode. Defaults to `'none'` when
+      `colorSpace` is `'linear'`, `'default'` otherwise.
+    </ParamField>
+    <ParamField path="premultiplyAlpha" type="'default' | 'none' | 'premultiply'" default="'default'">
+      Controls alpha premultiplication during decode.
+    </ParamField>
+    <ParamField path="imageOrientation" type="'none' | 'flipY'" default="'none'">
+      Controls bitmap orientation during decode.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField path="signal" type="AbortSignal">
+  External cancellation signal merged with the internal per-component signal.
+</ParamField>
+
+<ParamField path="update" type="'once' | 'onInvalidate' | 'perFrame'">
+  Runtime update strategy metadata attached to each loaded texture.
+</ParamField>
+
+<ParamField path="flipY" type="boolean">
+  Runtime flip-y metadata attached to loaded textures.
+</ParamField>
+
+<ParamField path="premultipliedAlpha" type="boolean">
+  Runtime premultiplied-alpha metadata attached to loaded textures.
+</ParamField>
+
+<ParamField path="generateMipmaps" type="boolean">
+  Runtime mipmap generation metadata attached to loaded textures.
+</ParamField>
+
+### `UseTextureResult`
+
+<ResponseField name="textures" type="CurrentReadable<LoadedTexture[] | null>">
+  Reactive list of successfully loaded textures. `null` while loading or after an error.
+  Textures are returned in the same order as the input URL array.
+</ResponseField>
+<ResponseField name="loading" type="CurrentReadable<boolean>">
+  `true` while an active load request is in progress.
+</ResponseField>
+<ResponseField name="error" type="CurrentReadable<Error | null>">
+  The last loading error, or `null` when no error is present.
+</ResponseField>
+<ResponseField name="errorReport" type="CurrentReadable<MotionGPUErrorReport | null>">
+  The last loading error normalized into a `MotionGPUErrorReport` with a stable `code`,
+  `title`, `hint`, and `details`. Useful for driving diagnostic UI.
+</ResponseField>
+<ResponseField name="reload" type="() => Promise<void>">
+  Cancels any in-flight request and restarts the load using the current URL input and
+  options. Idempotent — safe to call multiple times rapidly.
+</ResponseField>
+
+Each `LoadedTexture` in the `textures` array has:
+
+<ResponseField name="url" type="string">Source URL.</ResponseField>
+<ResponseField name="source" type="ImageBitmap">Decoded bitmap ready for GPU upload.</ResponseField>
+<ResponseField name="width" type="number">Bitmap width in pixels.</ResponseField>
+<ResponseField name="height" type="number">Bitmap height in pixels.</ResponseField>
+<ResponseField name="colorSpace" type="'srgb' | 'linear'">Effective color space.</ResponseField>
+<ResponseField name="update" type="TextureUpdateMode | undefined">Effective update strategy.</ResponseField>
+<ResponseField name="flipY" type="boolean | undefined">Effective flip-y metadata.</ResponseField>
+<ResponseField name="premultipliedAlpha" type="boolean | undefined">Effective premultiplied-alpha metadata.</ResponseField>
+<ResponseField name="generateMipmaps" type="boolean | undefined">Effective mipmap metadata.</ResponseField>
+<ResponseField name="dispose" type="() => void">
+  Releases the underlying `ImageBitmap`. Called automatically on component destroy/unmount.
+</ResponseField>
+
+### Examples
+
+<Tabs>
+  <Tab title="Svelte">
+```svelte
+<script>
+  import { useTexture } from '@motion-core/motion-gpu/svelte';
+  import { useFrame } from '@motion-core/motion-gpu/svelte';
+
+  const { textures, loading, error } = useTexture(['/images/noise.png']);
+
+  useFrame((state) => {
+    const loaded = textures.current;
+    if (loaded) {
+      state.setTexture('uNoise', loaded[0]);
+    }
+  });
+</script>
+
+{#if $loading}
+  <p>Loading...</p>
+{:else if $error}
+  <p>Error: {$error.message}</p>
+{/if}
+```
+  </Tab>
+  <Tab title="React">
+```tsx
+import { useTexture } from '@motion-core/motion-gpu/react';
+import { useFrame } from '@motion-core/motion-gpu/react';
+
+function TexturedLayer() {
+  const { textures, loading, error } = useTexture(['/images/noise.png']);
+
+  useFrame((state) => {
+    const loaded = textures.current;
+    if (loaded) {
+      state.setTexture('uNoise', loaded[0]);
+    }
+  });
+
+  if (loading.current) return <p>Loading...</p>;
+  if (error.current) return <p>Error: {error.current.message}</p>;
+  return null;
+}
+```
+  </Tab>
+</Tabs>
+
+#### Loading with options
+
+<Tabs>
+  <Tab title="Svelte">
+```svelte
+<script>
+  import { useTexture } from '@motion-core/motion-gpu/svelte';
+
+  const { textures } = useTexture(
+    ['/images/lut.png'],
+    { colorSpace: 'linear', flipY: true }
+  );
+</script>
+```
+  </Tab>
+  <Tab title="React">
+```tsx
+import { useTexture } from '@motion-core/motion-gpu/react';
+
+function LutLayer() {
+  const { textures } = useTexture(
+    ['/images/lut.png'],
+    { colorSpace: 'linear', flipY: true }
+  );
+  return null;
+}
+```
+  </Tab>
+</Tabs>

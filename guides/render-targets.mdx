@@ -1,0 +1,393 @@
+---
+title: "Render targets"
+description: "Declare named off-screen textures for multi-pass pipelines — half-resolution blur, HDR intermediates, and fixed-size compute buffers."
+keywords: ["render targets", "renderTargets", "RenderTargetDefinition", "named targets", "multi-pass", "scale", "format", "off-screen"]
+---
+
+Render targets are named off-screen textures that passes can read from and write to. They enable multi-pass techniques such as downsampled blur pyramids, HDR intermediates, and fixed-size computation buffers.
+
+## Declaring render targets
+
+Pass a `renderTargets` map to `FragCanvas`. The keys become slot names usable in pass `input` and `output` fields:
+
+<Tabs>
+  <Tab title="Svelte">
+    ```svelte App.svelte
+    <script lang="ts">
+      import { FragCanvas, defineMaterial, ShaderPass } from '@motion-core/motion-gpu/svelte';
+
+      const material = defineMaterial({
+        fragment: `
+    fn frag(uv: vec2f) -> vec4f {
+      return vec4f(uv.x, uv.y, 0.5, 1.0);
+    }
+    `
+      });
+
+      const renderTargets = {
+        half: { scale: 0.5 },
+        bloom: { width: 640, height: 360, format: 'rgba16float' as GPUTextureFormat }
+      };
+
+      const passes = [
+        new ShaderPass({
+          needsSwap: false,
+          output: 'half',
+          fragment: `
+    fn shade(inputColor: vec4f, uv: vec2f) -> vec4f {
+      return inputColor * 0.5;
+    }
+    `
+        }),
+        new ShaderPass({
+          needsSwap: false,
+          input: 'half',
+          output: 'canvas',
+          fragment: `
+    fn shade(inputColor: vec4f, uv: vec2f) -> vec4f {
+      return inputColor;
+    }
+    `
+        })
+      ];
+    </script>
+
+    <div style="width: 100vw; height: 100vh;">
+      <FragCanvas {material} {renderTargets} {passes} />
+    </div>
+    ```
+  </Tab>
+  <Tab title="React">
+    ```tsx App.tsx
+    import { FragCanvas, defineMaterial, ShaderPass } from '@motion-core/motion-gpu/react';
+
+    const material = defineMaterial({
+      fragment: `
+    fn frag(uv: vec2f) -> vec4f {
+      return vec4f(uv.x, uv.y, 0.5, 1.0);
+    }
+    `
+    });
+
+    const renderTargets = {
+      half:  { scale: 0.5 },
+      bloom: { width: 640, height: 360, format: 'rgba16float' as GPUTextureFormat }
+    };
+
+    const passes = [
+      new ShaderPass({
+        needsSwap: false,
+        output: 'half',
+        fragment: `
+    fn shade(inputColor: vec4f, uv: vec2f) -> vec4f {
+      return inputColor * 0.5;
+    }
+    `
+      }),
+      new ShaderPass({
+        needsSwap: false,
+        input: 'half',
+        output: 'canvas',
+        fragment: `
+    fn shade(inputColor: vec4f, uv: vec2f) -> vec4f {
+      return inputColor;
+    }
+    `
+      })
+    ];
+
+    export function App() {
+      return (
+        <div style={{ width: '100vw', height: '100vh' }}>
+          <FragCanvas material={material} renderTargets={renderTargets} passes={passes} />
+        </div>
+      );
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## `RenderTargetDefinition` fields
+
+<ParamField path="width" type="number">
+  Explicit width in pixels. Applied as `Math.max(1, Math.floor(value))`. When omitted, derived from `scale × canvasWidth`.
+</ParamField>
+
+<ParamField path="height" type="number">
+  Explicit height in pixels. Applied as `Math.max(1, Math.floor(value))`. When omitted, derived from `scale × canvasHeight`.
+</ParamField>
+
+<ParamField path="scale" type="number" default="1">
+  Canvas-relative scale factor. Applies independently to each dimension that lacks an explicit value. Must be finite and greater than `0`.
+</ParamField>
+
+<ParamField path="format" type="GPUTextureFormat">
+  Texture format. Defaults to the canvas surface format when omitted.
+</ParamField>
+
+## Canvas-relative scaling
+
+Each dimension is resolved independently:
+
+1. If `width` or `height` is explicitly set, that value is used (floored, minimum 1).
+2. If a dimension is not set, it is computed as `Math.max(1, Math.floor(canvasDimension × scale))`.
+3. If `scale` is not set, it defaults to `1` (full canvas resolution).
+
+| Definition | Canvas | Result |
+| --- | --- | --- |
+| `{ scale: 0.5 }` | 1920×1080 | 960×540 |
+| `{ scale: 0.25 }` | 1920×1080 | 480×270 |
+| `{ width: 256, height: 256 }` | any | 256×256 |
+| `{ width: 512 }` | 1920×1080 | 512×1080 |
+| `{}` | 1920×1080 | 1920×1080 (full canvas) |
+
+Scaled targets resize automatically when the canvas resizes. Fixed-dimension targets do not.
+
+## Using named targets in passes
+
+Named target keys can be used directly in `RenderPass.input` and `RenderPass.output`:
+
+```typescript
+const passes = [
+  // Write from the base shader result into 'bloomBright'
+  new ShaderPass({
+    needsSwap: false,
+    output: 'bloomBright',
+    fragment: `
+fn shade(inputColor: vec4f, uv: vec2f) -> vec4f {
+  let luma = dot(inputColor.rgb, vec3f(0.2126, 0.7152, 0.0722));
+  return vec4f(inputColor.rgb * step(0.7, luma), inputColor.a);
+}
+`
+  }),
+  // Read from 'bloomBright' and composite to canvas
+  new ShaderPass({
+    needsSwap: false,
+    input: 'bloomBright',
+    output: 'canvas',
+    fragment: `
+fn shade(inputColor: vec4f, uv: vec2f) -> vec4f {
+  return vec4f(inputColor.rgb * 1.5, inputColor.a);
+}
+`
+  })
+];
+```
+
+<Note>
+  Named outputs are only valid with `needsSwap: false`. The `needsSwap: true` flag is reserved for the `source → target` ping-pong pattern.
+</Note>
+
+## Accessing targets in custom passes
+
+Named render targets are available in `RenderPassContext.targets`:
+
+```typescript
+import type { RenderPass, RenderPassContext } from '@motion-core/motion-gpu';
+
+class CompositePass implements RenderPass {
+  enabled  = true;
+  needsSwap = false;
+  input    = 'source' as const;
+  output   = 'canvas' as const;
+  clear    = false;
+  clearColor: [number, number, number, number] = [0, 0, 0, 1];
+  preserve = true;
+
+  render(context: RenderPassContext): void {
+    const bloomTarget = context.targets['bloomBright'];
+    if (!bloomTarget) return;
+
+    // Use bloomTarget.texture, bloomTarget.view, bloomTarget.width, etc.
+    const pass = context.beginRenderPass();
+    // ... custom rendering using bloomTarget
+    pass.end();
+  }
+}
+```
+
+## Multi-pass pipeline example
+
+The following example creates a three-pass pipeline with an intermediate half-resolution bloom target and an HDR accumulation buffer:
+
+<Tabs>
+  <Tab title="Svelte">
+    ```svelte App.svelte
+    <script lang="ts">
+      import { FragCanvas, defineMaterial, ShaderPass, CopyPass } from '@motion-core/motion-gpu/svelte';
+
+      const material = defineMaterial({
+        fragment: `
+    fn frag(uv: vec2f) -> vec4f {
+      let t = motiongpuFrame.time;
+      let wave = 0.5 + 0.5 * sin(t * 2.0 + uv.x * 8.0 + uv.y * 6.0);
+      return vec4f(wave, wave * 0.4, 0.8, 1.0);
+    }
+    `
+      });
+
+      const renderTargets = {
+        halfRes: { scale: 0.5 },
+        hdr:     { format: 'rgba16float' as GPUTextureFormat }
+      };
+
+      // Pass 1: Copy base result to HDR target at full res
+      const toHdr = new CopyPass({
+        needsSwap: false,
+        input:  'source',
+        output: 'hdr'
+      });
+
+      // Pass 2: Downsample to half-res for blur
+      const downsample = new ShaderPass({
+        needsSwap: false,
+        input:  'source',
+        output: 'halfRes',
+        fragment: `
+    fn shade(inputColor: vec4f, uv: vec2f) -> vec4f {
+      return inputColor;
+    }
+    `
+      });
+
+      // Pass 3: Composite half-res over source to canvas
+      const composite = new ShaderPass({
+        needsSwap: false,
+        input:  'hdr',
+        output: 'canvas',
+        fragment: `
+    fn shade(inputColor: vec4f, uv: vec2f) -> vec4f {
+      return vec4f(pow(inputColor.rgb, vec3f(1.0 / 2.2)), inputColor.a);
+    }
+    `
+      });
+    </script>
+
+    <div style="width: 100vw; height: 100vh;">
+      <FragCanvas
+        {material}
+        {renderTargets}
+        passes={[toHdr, downsample, composite]}
+      />
+    </div>
+    ```
+  </Tab>
+  <Tab title="React">
+    ```tsx App.tsx
+    import { FragCanvas, defineMaterial, ShaderPass, CopyPass } from '@motion-core/motion-gpu/react';
+
+    const material = defineMaterial({
+      fragment: `
+    fn frag(uv: vec2f) -> vec4f {
+      let t = motiongpuFrame.time;
+      let wave = 0.5 + 0.5 * sin(t * 2.0 + uv.x * 8.0 + uv.y * 6.0);
+      return vec4f(wave, wave * 0.4, 0.8, 1.0);
+    }
+    `
+    });
+
+    const renderTargets = {
+      halfRes: { scale: 0.5 },
+      hdr:     { format: 'rgba16float' as GPUTextureFormat }
+    };
+
+    const toHdr = new CopyPass({
+      needsSwap: false,
+      input:  'source',
+      output: 'hdr'
+    });
+
+    const downsample = new ShaderPass({
+      needsSwap: false,
+      input:  'source',
+      output: 'halfRes',
+      fragment: `
+    fn shade(inputColor: vec4f, uv: vec2f) -> vec4f {
+      return inputColor;
+    }
+    `
+    });
+
+    const composite = new ShaderPass({
+      needsSwap: false,
+      input:  'hdr',
+      output: 'canvas',
+      fragment: `
+    fn shade(inputColor: vec4f, uv: vec2f) -> vec4f {
+      return vec4f(pow(inputColor.rgb, vec3f(1.0 / 2.2)), inputColor.a);
+    }
+    `
+    });
+
+    export function App() {
+      return (
+        <div style={{ width: '100vw', height: '100vh' }}>
+          <FragCanvas
+            material={material}
+            renderTargets={renderTargets}
+            passes={[toHdr, downsample, composite]}
+          />
+        </div>
+      );
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Lifecycle and change detection
+
+The renderer manages render target textures automatically:
+
+| Event | Action |
+| --- | --- |
+| New target added | GPU texture allocated |
+| Canvas resizes (for scaled targets) | Texture reallocated at new resolution |
+| Target definition changes | Texture reallocated |
+| Target removed from map | GPU texture destroyed |
+| Renderer destroyed | All target textures destroyed |
+
+Change detection uses a **deterministic signature**: `key:format:widthxheight`. Only targets whose signature changed are reallocated. Stable targets keep their existing GPU texture across frames.
+
+## Naming rules
+
+Target keys must be valid WGSL identifiers: `[A-Za-z_][A-Za-z0-9_]*`. Invalid names throw during resolution.
+
+## Validation
+
+| Condition | Result |
+| --- | --- |
+| `scale <= 0` or non-finite | Throws |
+| `width <= 0` or `height <= 0` | Throws |
+| `width` or `height` is `NaN` or `Infinity` | Throws |
+| Invalid key identifier | Throws |
+| Pass writes undeclared named slot | Throws during render graph planning |
+| Pass reads undeclared named slot | Throws during render graph planning |
+| Pass reads named slot before first write | Throws during render graph planning |
+
+## Common patterns
+
+<AccordionGroup>
+  <Accordion title="Half-resolution blur pyramid">
+    ```typescript
+    const renderTargets = {
+      halfRes:    { scale: 0.5 },
+      quarterRes: { scale: 0.25 }
+    };
+    ```
+  </Accordion>
+  <Accordion title="Fixed-resolution computation buffer">
+    ```typescript
+    const renderTargets = {
+      compute: { width: 256, height: 256, format: 'rgba16float' as GPUTextureFormat }
+    };
+    ```
+  </Accordion>
+  <Accordion title="HDR intermediate at full canvas resolution">
+    ```typescript
+    const renderTargets = {
+      hdr: { format: 'rgba16float' as GPUTextureFormat }
+      // Omit width/height — defaults to scale: 1 (full canvas)
+    };
+    ```
+  </Accordion>
+</AccordionGroup>

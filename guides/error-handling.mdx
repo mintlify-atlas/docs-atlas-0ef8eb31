@@ -1,0 +1,357 @@
+---
+title: "Error Handling"
+description: "Understand the error normalization pipeline, structured MotionGPUErrorReport shape, shader diagnostics, and how to customize error handling in FragCanvas."
+---
+
+Motion GPU normalizes all runtime errors — from WebGPU initialization failures to WGSL compilation errors to per-frame render exceptions — into a single consistent `MotionGPUErrorReport` structure. This gives you predictable, machine-readable payloads for telemetry, custom overlays, and automated alerting.
+
+## How errors flow
+
+<Steps>
+  <Step title="Error is thrown">
+    An exception occurs during initialization (adapter/device creation, shader compilation, pipeline setup) or during the per-frame render loop.
+  </Step>
+  <Step title="toMotionGPUErrorReport() normalizes it">
+    The thrown value is passed to `toMotionGPUErrorReport(error, phase)`. The function inspects the message, classifies it into a stable error code, and returns a structured `MotionGPUErrorReport`.
+  </Step>
+  <Step title="onError callback is called">
+    If an `onError` prop is provided on `FragCanvas`, it is called with the report.
+  </Step>
+  <Step title="Overlay renders (unless disabled)">
+    If `showErrorOverlay` is `true` (the default), the built-in `MotionGPUErrorOverlay` renders above the canvas via a DOM portal. You can replace it with `errorRenderer`.
+  </Step>
+</Steps>
+
+---
+
+## MotionGPUErrorReport shape
+
+```typescript
+interface MotionGPUErrorReport {
+  code: MotionGPUErrorCode;          // stable machine-readable category
+  severity: 'error' | 'fatal';       // error level
+  recoverable: boolean;              // can the runtime continue?
+  title: string;                     // short category heading
+  message: string;                   // primary human-readable message
+  hint: string;                      // suggested remediation
+  details: string[];                 // extra compiler lines / details
+  stack: string[];                   // stack trace lines when available
+  rawMessage: string;                // original unsanitized message
+  phase: 'initialization' | 'render';
+  source: MotionGPUErrorSource | null;   // shader source context
+  context: MotionGPUErrorContext | null; // runtime snapshot
+}
+```
+
+### Field descriptions
+
+<ParamField path="code" type="MotionGPUErrorCode">
+  Stable, machine-readable category code. Use this for routing alerts and telemetry. See the full list below.
+</ParamField>
+
+<ParamField path="severity" type="'error' | 'fatal'">
+  `'error'` — runtime may continue (renderer retries). `'fatal'` — the renderer cannot recover without user action (e.g. switching browser).
+</ParamField>
+
+<ParamField path="recoverable" type="boolean">
+  When `true`, the renderer will automatically retry after a backoff delay. When `false`, no retry is attempted.
+</ParamField>
+
+<ParamField path="phase" type="'initialization' | 'render'">
+  `'initialization'` — occurred during adapter/device/pipeline setup. `'render'` — occurred during a per-frame render call.
+</ParamField>
+
+<ParamField path="source" type="MotionGPUErrorSource | null">
+  Source code context for shader compilation errors. Includes the component name, location label, line number, optional column, and a highlighted code snippet.
+</ParamField>
+
+<ParamField path="context" type="MotionGPUErrorContext | null">
+  Runtime snapshot: `materialSignature`, pass graph summary (`passCount`, `enabledPassCount`, `inputs`, `outputs`), and `activeRenderTargets`.
+</ParamField>
+
+---
+
+## Error codes
+
+<Accordion title="WebGPU environment errors">
+  | Code | Severity | Recoverable | Triggered by |
+  |---|---|---|---|
+  | `WEBGPU_UNAVAILABLE` | `fatal` | `false` | WebGPU API not present in the browser |
+  | `WEBGPU_ADAPTER_UNAVAILABLE` | `fatal` | `false` | `requestAdapter()` returned `null` |
+  | `WEBGPU_CONTEXT_UNAVAILABLE` | `error` | `true` | Canvas cannot create a `webgpu` context |
+  | `WEBGPU_DEVICE_LOST` | `fatal` | `false` | GPU device lost (driver crash, suspend, resource exhaustion) |
+  | `WEBGPU_UNCAPTURED_ERROR` | `error` | `true` | Unexpected WebGPU validation or out-of-memory error |
+</Accordion>
+
+<Accordion title="Shader and material errors">
+  | Code | Severity | Recoverable | Triggered by |
+  |---|---|---|---|
+  | `WGSL_COMPILATION_FAILED` | `error` | `true` | Fragment shader failed to compile |
+  | `COMPUTE_COMPILATION_FAILED` | `error` | `true` | Compute shader failed to compile |
+  | `COMPUTE_CONTRACT_INVALID` | `error` | `true` | Compute shader missing `@compute`, `@workgroup_size`, `fn compute`, or `@builtin(global_invocation_id)` |
+  | `MATERIAL_PREPROCESS_FAILED` | `error` | `true` | Invalid `#include`, circular include, or bad `#define` value |
+</Accordion>
+
+<Accordion title="Resource binding errors">
+  | Code | Severity | Recoverable | Triggered by |
+  |---|---|---|---|
+  | `RUNTIME_RESOURCE_MISSING` | `error` | `true` | Unknown uniform, texture, or storage buffer name at runtime |
+  | `UNIFORM_VALUE_INVALID` | `error` | `true` | Uniform value has wrong shape or contains non-finite numbers |
+  | `BIND_GROUP_MISMATCH` | `error` | `true` | Shader bindings and runtime resources are out of sync |
+  | `STORAGE_BUFFER_OUT_OF_BOUNDS` | `error` | `true` | `writeStorageBuffer` offset + data size exceeds buffer size |
+  | `STORAGE_BUFFER_READ_FAILED` | `error` | `true` | `readStorageBuffer` called before renderer is ready or buffer not allocated |
+</Accordion>
+
+<Accordion title="Render graph and texture errors">
+  | Code | Severity | Recoverable | Triggered by |
+  |---|---|---|---|
+  | `RENDER_GRAPH_INVALID` | `error` | `true` | Invalid pass inputs/outputs or unknown render target references |
+  | `PINGPONG_CONFIGURATION_INVALID` | `error` | `true` | `PingPongComputePass` missing a `target` texture key |
+  | `TEXTURE_USAGE_INVALID` | `error` | `true` | Texture used as upload destination lacks `CopyDst` flag |
+  | `TEXTURE_REQUEST_FAILED` | `error` | `true` | Texture URL fetch failed (network, CORS, status) |
+  | `TEXTURE_DECODE_UNAVAILABLE` | `fatal` | `false` | `createImageBitmap` unavailable in the runtime |
+  | `TEXTURE_REQUEST_ABORTED` | `error` | `true` | Texture load was cancelled |
+</Accordion>
+
+<Accordion title="Fallback">
+  | Code | Severity | Recoverable | Triggered by |
+  |---|---|---|---|
+  | `MOTIONGPU_RUNTIME_ERROR` | `error` | `true` | Any other unexpected render or frame error |
+</Accordion>
+
+---
+
+## Built-in error overlay
+
+By default, `FragCanvas` renders `MotionGPUErrorOverlay` above the canvas via a DOM portal when an error occurs. The overlay shows the `phase`, `code`, `severity`, `recoverable` flag, `title`, `message`, `hint`, `details`, and — for shader compilation errors — a highlighted code snippet.
+
+### FragCanvas error props
+
+<ParamField path="showErrorOverlay" type="boolean" default="true">
+  Set to `false` to disable all built-in overlay rendering. `onError` is still called when disabled.
+</ParamField>
+
+<ParamField path="onError" type="(report: MotionGPUErrorReport) => void">
+  Callback invoked each time a new unique error is reported. Use this for logging and telemetry.
+</ParamField>
+
+<ParamField path="errorRenderer" type="Snippet (Svelte) | ((report) => ReactNode) (React)">
+  Custom UI renderer that replaces the default overlay when `showErrorOverlay` is `true`.
+</ParamField>
+
+<ParamField path="errorHistoryLimit" type="number" default="0">
+  When `> 0`, enables bounded error history. History behaves as a ring buffer of the latest `N` unique reports. Consecutive identical reports are deduplicated.
+</ParamField>
+
+<ParamField path="onErrorHistory" type="(history: MotionGPUErrorReport[]) => void">
+  Callback invoked with the deduplicated bounded history snapshot whenever history changes.
+</ParamField>
+
+---
+
+## Custom error handling
+
+### Minimal logging
+
+<Tabs>
+  <Tab title="Svelte">
+    ```svelte
+    <FragCanvas
+      {material}
+      showErrorOverlay={false}
+      onError={(report) => {
+        console.error(
+          `[${report.code}] ${report.severity} / ${report.phase}: ${report.title}`,
+          report.message
+        );
+        if (report.hint) {
+          console.info('Hint:', report.hint);
+        }
+      }}
+    />
+    ```
+  </Tab>
+  <Tab title="React">
+    ```tsx
+    <FragCanvas
+      material={material}
+      showErrorOverlay={false}
+      onError={(report) => {
+        console.error(
+          `[${report.code}] ${report.severity} / ${report.phase}: ${report.title}`,
+          report.message
+        );
+        if (report.hint) {
+          console.info('Hint:', report.hint);
+        }
+      }}
+    />
+    ```
+  </Tab>
+</Tabs>
+
+### Custom overlay component
+
+<Tabs>
+  <Tab title="Svelte">
+    ```svelte
+    {#snippet myError(report)}
+      <aside class="error-banner">
+        <strong>[{report.code}] {report.title}</strong>
+        <p>{report.message}</p>
+        {#if report.hint}
+          <p class="hint">{report.hint}</p>
+        {/if}
+        {#if report.source}
+          <pre>{report.source.snippet.map(l =>
+            (l.highlight ? '→ ' : '  ') + l.number + ' ' + l.code
+          ).join('\n')}</pre>
+        {/if}
+      </aside>
+    {/snippet}
+
+    <FragCanvas {material} errorRenderer={myError} />
+    ```
+  </Tab>
+  <Tab title="React">
+    ```tsx
+    function MyErrorUI({ report }: { report: MotionGPUErrorReport }) {
+      return (
+        <aside className="error-banner">
+          <strong>[{report.code}] {report.title}</strong>
+          <p>{report.message}</p>
+          {report.hint && <p className="hint">{report.hint}</p>}
+          {report.source && (
+            <pre>
+              {report.source.snippet.map((l) =>
+                `${l.highlight ? '→ ' : '  '}${l.number} ${l.code}`
+              ).join('\n')}
+            </pre>
+          )}
+        </aside>
+      );
+    }
+
+    <FragCanvas
+      material={material}
+      errorRenderer={(report) => <MyErrorUI report={report} />}
+    />
+    ```
+  </Tab>
+</Tabs>
+
+### Error history
+
+```svelte
+<FragCanvas
+  {material}
+  errorHistoryLimit={10}
+  onErrorHistory={(history) => {
+    const latest = history[history.length - 1];
+    if (latest) {
+      console.info(`Session error count: ${history.length}, latest: ${latest.code}`);
+    }
+  }}
+/>
+```
+
+---
+
+## Shader compile diagnostics
+
+When WGSL compilation fails, Motion GPU extracts diagnostics from `GPUShaderModule.getCompilationInfo()` and maps generated WGSL line numbers back to original source lines using a per-material source line map.
+
+### Source location kinds
+
+| Kind | Reported as |
+|---|---|
+| User fragment | `fragment line X` |
+| Include chunk | `include <name> line X` |
+| Define constant | `define "NAME" line X` |
+
+### MotionGPUErrorSource fields
+
+<ParamField path="component" type="string">
+  Display name of the source component (component name, file name, or `#include`/`#define` label).
+</ParamField>
+
+<ParamField path="location" type="string">
+  Human-readable location label, e.g. `"MyShader.svelte (fragment line 12)"`.
+</ParamField>
+
+<ParamField path="line" type="number">
+  Source line number in the original user shader (not the generated WGSL).
+</ParamField>
+
+<ParamField path="column" type="number | undefined">
+  Column position when reported by the GPU compiler.
+</ParamField>
+
+<ParamField path="snippet" type="MotionGPUErrorSourceLine[]">
+  Code lines surrounding the error: `{ number: number; code: string; highlight: boolean }`. The failing line has `highlight: true`.
+</ParamField>
+
+### toMotionGPUErrorReport utility
+
+You can normalize any thrown value yourself using the exported utility:
+
+```typescript
+import { toMotionGPUErrorReport } from '@motion-core/motion-gpu';
+
+try {
+  // Some operation that may fail
+} catch (error) {
+  const report = toMotionGPUErrorReport(error, 'initialization');
+  console.error(report.code, report.message);
+}
+```
+
+---
+
+## Device loss and uncaptured errors
+
+The renderer registers two asynchronous error listeners on every GPU device:
+
+| Event | Source |
+|---|---|
+| `device.lost` promise | Driver crash, system sleep, resource exhaustion |
+| `device.addEventListener('uncapturederror', ...)` | Unexpected WebGPU validation error or out-of-memory |
+
+When either fires, the error state is stored. The next render tick throws the normalized error, routing it through the standard `onError`/overlay pipeline.
+
+---
+
+## Retry strategy
+
+When renderer creation fails, `FragCanvas` retries automatically with **exponential backoff**:
+
+| Attempt | Delay |
+|---|---|
+| 1st | 250 ms |
+| 2nd | 500 ms |
+| 3rd | 1 000 ms |
+| 4th | 2 000 ms |
+| 5th | 4 000 ms |
+| 6th and beyond | 8 000 ms (cap) |
+
+Retry state **resets** when the pipeline signature changes — for example, when you fix a shader error and the module hot-reloads.
+
+---
+
+## Production recommendations
+
+<Tip>
+  Always provide `onError` — send reports to your logging or telemetry system. Route alerts by `code` + `severity` first, then use `phase`, `title`, and `hint` for triage context.
+</Tip>
+
+<Tip>
+  Keep the default overlay enabled in development and staging. It surfaces WGSL errors with line-level precision pointing directly at your shader source.
+</Tip>
+
+<Tip>
+  Use `errorHistoryLimit` for session diagnostics without unbounded memory growth. Set it to `10–20` for typical debug sessions.
+</Tip>
+
+<Warning>
+  `fatal` errors with `recoverable: false` will not retry. Handle `WEBGPU_UNAVAILABLE` and `WEBGPU_DEVICE_LOST` with a graceful fallback UI — these require user action (browser update, page reload, or hardware change).
+</Warning>

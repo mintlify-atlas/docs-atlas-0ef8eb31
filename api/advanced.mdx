@@ -1,0 +1,688 @@
+---
+title: "Advanced API"
+description: "Scheduler helpers, user context APIs, low-level runtime primitives, and texture utilities from the advanced entrypoints."
+---
+
+The advanced entrypoints expose scheduler control, user context management, and low-level
+primitives for building custom adapters and tooling.
+
+## Entrypoints
+
+| Entrypoint | Contents |
+| --- | --- |
+| `@motion-core/motion-gpu/advanced` | Core exports + scheduler helpers |
+| `@motion-core/motion-gpu/svelte/advanced` | Svelte runtime API + scheduler helpers + user context |
+| `@motion-core/motion-gpu/react/advanced` | React runtime API + scheduler helpers + user context + React-only setter |
+
+<Note>
+  The `/advanced` entrypoints re-export everything from the base entrypoints, so you can
+  replace `@motion-core/motion-gpu/svelte` with `@motion-core/motion-gpu/svelte/advanced`
+  without losing any existing imports.
+</Note>
+
+---
+
+## `applySchedulerPreset`
+
+Applies a named configuration preset to a `MotionGPUScheduler` instance. Returns the
+resolved configuration after overrides are applied.
+
+```typescript
+function applySchedulerPreset(
+  scheduler: MotionGPUScheduler,
+  preset: SchedulerPreset,
+  options?: ApplySchedulerPresetOptions
+): SchedulerPresetConfig
+```
+
+### Parameters
+
+<ParamField path="scheduler" type="MotionGPUScheduler" required>
+  The active scheduler from `useMotionGPU().scheduler`.
+</ParamField>
+
+<ParamField path="preset" type="SchedulerPreset" required>
+  Named preset to apply. One of:
+
+  | Preset | `diagnosticsEnabled` | `profilingEnabled` | `profilingWindow` |
+  | --- | --- | --- | --- |
+  | `'performance'` | `false` | `false` | `60` frames |
+  | `'balanced'` | `true` | `true` | `120` frames |
+  | `'debug'` | `true` | `true` | `240` frames |
+</ParamField>
+
+<ParamField path="options" type="ApplySchedulerPresetOptions">
+  Optional overrides applied on top of the named preset.
+
+  <Expandable title="ApplySchedulerPresetOptions fields">
+    <ParamField path="diagnosticsEnabled" type="boolean">
+      Override diagnostics toggle. Must match `profilingEnabled` — the scheduler shares
+      a single internal toggle for both.
+    </ParamField>
+    <ParamField path="profilingEnabled" type="boolean">
+      Override profiling toggle. Must match `diagnosticsEnabled`.
+    </ParamField>
+    <ParamField path="profilingWindow" type="number">
+      Override profiling history window in frames. Must be a finite number greater than 0.
+      Rounded down to the nearest integer.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<Warning>
+  `diagnosticsEnabled` and `profilingEnabled` share a single internal toggle in the
+  current scheduler implementation. Both overrides must have the same boolean value,
+  or `applySchedulerPreset` throws.
+</Warning>
+
+### Return value
+
+Returns `SchedulerPresetConfig` — the resolved values after preset defaults and overrides:
+
+<ResponseField name="diagnosticsEnabled" type="boolean">Whether diagnostics capture is active.</ResponseField>
+<ResponseField name="profilingEnabled" type="boolean">Whether profiling is active.</ResponseField>
+<ResponseField name="profilingWindow" type="number">Active profiling history window in frames.</ResponseField>
+
+### Example
+
+<Tabs>
+  <Tab title="Svelte">
+```svelte
+<script>
+  import { useMotionGPU } from '@motion-core/motion-gpu/svelte';
+  import { applySchedulerPreset } from '@motion-core/motion-gpu/svelte/advanced';
+
+  const { scheduler } = useMotionGPU();
+
+  // Enable full profiling for development
+  applySchedulerPreset(scheduler, 'debug');
+
+  // Or override the window for a tighter budget
+  applySchedulerPreset(scheduler, 'balanced', { profilingWindow: 60, diagnosticsEnabled: true, profilingEnabled: true });
+</script>
+```
+  </Tab>
+  <Tab title="React">
+```tsx
+import { useEffect } from 'react';
+import { useMotionGPU } from '@motion-core/motion-gpu/react';
+import { applySchedulerPreset } from '@motion-core/motion-gpu/react/advanced';
+
+function DevTools() {
+  const { scheduler } = useMotionGPU();
+
+  useEffect(() => {
+    applySchedulerPreset(scheduler, 'debug');
+  }, [scheduler]);
+
+  return null;
+}
+```
+  </Tab>
+</Tabs>
+
+---
+
+## `captureSchedulerDebugSnapshot`
+
+Captures a point-in-time diagnostics snapshot from a scheduler instance. Useful for
+debug tooling, logging, and rendering diagnostics overlays.
+
+```typescript
+function captureSchedulerDebugSnapshot(
+  scheduler: MotionGPUScheduler
+): SchedulerDebugSnapshot
+```
+
+### Parameters
+
+<ParamField path="scheduler" type="MotionGPUScheduler" required>
+  The active scheduler from `useMotionGPU().scheduler`.
+</ParamField>
+
+### Return value: `SchedulerDebugSnapshot`
+
+<ResponseField name="diagnosticsEnabled" type="boolean">Whether diagnostics capture is currently active.</ResponseField>
+<ResponseField name="profilingEnabled" type="boolean">Whether profiling is currently active.</ResponseField>
+<ResponseField name="profilingWindow" type="number">Active profiling history window in frames.</ResponseField>
+<ResponseField name="schedule" type="FrameScheduleSnapshot">
+  Current dependency-resolved execution order.
+
+  <Expandable title="FrameScheduleSnapshot shape">
+    ```typescript
+    interface FrameScheduleSnapshot {
+      stages: Array<{
+        key: string;
+        tasks: string[];
+      }>;
+    }
+    ```
+  </Expandable>
+</ResponseField>
+<ResponseField name="lastRunTimings" type="FrameRunTimings | null">
+  Per-stage and per-task wall-clock durations from the last scheduler run. `null` when
+  diagnostics are disabled.
+
+  <Expandable title="FrameRunTimings shape">
+    ```typescript
+    interface FrameRunTimings {
+      total: number;
+      stages: Record<string, {
+        duration: number;
+        tasks: Record<string, number>;
+      }>;
+    }
+    ```
+  </Expandable>
+</ResponseField>
+<ResponseField name="profilingSnapshot" type="FrameProfilingSnapshot | null">
+  Aggregated timing statistics over the profiling history window. `null` when profiling
+  is disabled.
+
+  <Expandable title="FrameProfilingSnapshot shape">
+    ```typescript
+    interface FrameProfilingSnapshot {
+      window: number;
+      frameCount: number;
+      lastFrame: FrameRunTimings | null;
+      total: FrameTimingStats;
+      stages: Record<string, {
+        timings: FrameTimingStats;
+        tasks: Record<string, FrameTimingStats>;
+      }>;
+    }
+
+    interface FrameTimingStats {
+      last: number;
+      avg: number;
+      min: number;
+      max: number;
+      count: number;
+    }
+    ```
+  </Expandable>
+</ResponseField>
+
+### Example
+
+<Tabs>
+  <Tab title="Svelte">
+```svelte
+<script>
+  import { useMotionGPU } from '@motion-core/motion-gpu/svelte';
+  import {
+    applySchedulerPreset,
+    captureSchedulerDebugSnapshot
+  } from '@motion-core/motion-gpu/svelte/advanced';
+  import { useFrame } from '@motion-core/motion-gpu/svelte';
+
+  const { scheduler } = useMotionGPU();
+
+  applySchedulerPreset(scheduler, 'debug');
+
+  useFrame(() => {
+    const snapshot = captureSchedulerDebugSnapshot(scheduler);
+    console.log('Frame total:', snapshot.lastRunTimings?.total);
+  }, { autoInvalidate: false });
+</script>
+```
+  </Tab>
+  <Tab title="React">
+```tsx
+import { useEffect } from 'react';
+import { useMotionGPU } from '@motion-core/motion-gpu/react';
+import {
+  applySchedulerPreset,
+  captureSchedulerDebugSnapshot
+} from '@motion-core/motion-gpu/react/advanced';
+
+function PerfMonitor() {
+  const { scheduler } = useMotionGPU();
+
+  useEffect(() => {
+    applySchedulerPreset(scheduler, 'debug');
+    const id = setInterval(() => {
+      const snapshot = captureSchedulerDebugSnapshot(scheduler);
+      console.log(snapshot);
+    }, 2000);
+    return () => clearInterval(id);
+  }, [scheduler]);
+
+  return null;
+}
+```
+  </Tab>
+</Tabs>
+
+---
+
+## `useMotionGPUUserContext`
+
+Reads the shared user context store provided by the enclosing `FragCanvas`. Available
+from both Svelte and React advanced entrypoints.
+
+```typescript
+// Full store (no namespace)
+useMotionGPUUserContext<UC>(): CurrentReadable<UC>
+
+// Namespaced slice
+useMotionGPUUserContext<UC, K>(namespace: K): CurrentReadable<UC[K] | undefined>
+```
+
+<Warning>
+  Must be called inside a `<FragCanvas>` subtree.
+</Warning>
+
+The user context store is a `CurrentWritable<Record<MotionGPUUserNamespace, unknown>>`
+where `MotionGPUUserNamespace` is `string | symbol`. Use namespaces to avoid key
+collisions between independent systems.
+
+### Example
+
+<Tabs>
+  <Tab title="Svelte">
+```svelte
+<script>
+  import { useMotionGPUUserContext } from '@motion-core/motion-gpu/svelte/advanced';
+
+  // Read a typed namespace slice
+  const cameraStore = useMotionGPUUserContext<
+    { camera: { fov: number; position: [number, number, number] } },
+    'camera'
+  >('camera');
+</script>
+
+{#if $cameraStore}
+  <p>FOV: {$cameraStore.fov}</p>
+{/if}
+```
+  </Tab>
+  <Tab title="React">
+```tsx
+import { useMotionGPUUserContext } from '@motion-core/motion-gpu/react/advanced';
+
+function CameraDebug() {
+  const cameraStore = useMotionGPUUserContext<
+    { camera: { fov: number } },
+    'camera'
+  >('camera');
+
+  const camera = cameraStore.current;
+  return camera ? <p>FOV: {camera.fov}</p> : null;
+}
+```
+  </Tab>
+</Tabs>
+
+---
+
+## `setMotionGPUUserContext`
+
+Writes a namespaced value to the user context store. Available from both Svelte and
+React advanced entrypoints.
+
+```typescript
+function setMotionGPUUserContext<UCT = unknown>(
+  namespace: MotionGPUUserNamespace,
+  value: UCT | (() => UCT),
+  options?: SetMotionGPUUserContextOptions
+): UCT | undefined
+```
+
+<Warning>
+  Must be called inside a `<FragCanvas>` subtree.
+</Warning>
+
+### Parameters
+
+<ParamField path="namespace" type="string | symbol" required>
+  Namespace key to write under.
+</ParamField>
+
+<ParamField path="value" type="UCT | (() => UCT)" required>
+  Value or factory function to store. When `value` is a function and
+  `options.functionValue` is `'factory'` (default), the function is called immediately
+  and its return value is stored. Set `options.functionValue` to `'value'` to store
+  the function itself.
+</ParamField>
+
+<ParamField path="options" type="SetMotionGPUUserContextOptions">
+  <Expandable title="SetMotionGPUUserContextOptions fields">
+    <ParamField path="existing" type="'skip' | 'replace' | 'merge'" default="'skip'">
+      Conflict strategy when a value already exists under the namespace:
+      - `'skip'` — keep the current value, return it unchanged
+      - `'replace'` — overwrite with the new value
+      - `'merge'` — shallow merge when both current and new values are plain objects;
+        falls back to replace otherwise
+    </ParamField>
+    <ParamField path="functionValue" type="'factory' | 'value'" default="'factory'">
+      How function inputs are interpreted:
+      - `'factory'` — call the function and store its return value
+      - `'value'` — store the function reference itself
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+Returns the effective value stored under the namespace after the operation.
+
+### Example
+
+<Tabs>
+  <Tab title="Svelte">
+```svelte
+<script>
+  import {
+    setMotionGPUUserContext,
+    useMotionGPUUserContext
+  } from '@motion-core/motion-gpu/svelte/advanced';
+
+  // Initialize once (skip if already set)
+  setMotionGPUUserContext('camera', { fov: 45, position: [0, 0, 5] });
+
+  // Replace later
+  setMotionGPUUserContext('camera', { fov: 60, position: [0, 0, 3] }, {
+    existing: 'replace'
+  });
+
+  const camera = useMotionGPUUserContext('camera');
+</script>
+```
+  </Tab>
+  <Tab title="React">
+```tsx
+import { useEffect } from 'react';
+import { setMotionGPUUserContext } from '@motion-core/motion-gpu/react/advanced';
+
+function CameraSetup() {
+  // setMotionGPUUserContext must be called inside a render or effect
+  // Use useSetMotionGPUUserContext for reactive writes in React
+  setMotionGPUUserContext('camera', { fov: 45 });
+  return null;
+}
+```
+  </Tab>
+</Tabs>
+
+---
+
+## `useSetMotionGPUUserContext` (React only)
+
+Returns a stable setter function bound to the active MotionGPU user context store.
+Prefer this over calling `setMotionGPUUserContext` directly in React event handlers
+and effects, since it is memoized and stable across renders.
+
+```typescript
+function useSetMotionGPUUserContext(): <UCT = unknown>(
+  namespace: MotionGPUUserNamespace,
+  value: UCT | (() => UCT),
+  options?: SetMotionGPUUserContextOptions
+) => UCT | undefined
+```
+
+<Warning>
+  React only. Available from `@motion-core/motion-gpu/react/advanced`.
+  Must be called inside a `<FragCanvas>` subtree.
+</Warning>
+
+### Example
+
+```tsx
+import {
+  useSetMotionGPUUserContext
+} from '@motion-core/motion-gpu/react/advanced';
+
+function CameraControls() {
+  const setUserContext = useSetMotionGPUUserContext();
+
+  const handleFovChange = (fov: number) => {
+    setUserContext('camera', { fov }, { existing: 'merge' });
+  };
+
+  return <input type="range" onChange={(e) => handleFovChange(Number(e.target.value))} />;
+}
+```
+
+---
+
+## `createMotionGPURuntimeLoop`
+
+Low-level core primitive for building custom framework adapters. Used internally by the
+Svelte and React `FragCanvas` implementations.
+
+```typescript
+function createMotionGPURuntimeLoop(
+  options: MotionGPURuntimeLoopOptions
+): MotionGPURuntimeLoop
+```
+
+<Warning>
+  This is an internal building block intended for adapter authors. Use `<FragCanvas>`
+  for all application-level rendering.
+</Warning>
+
+### `MotionGPURuntimeLoopOptions`
+
+<ParamField path="canvas" type="HTMLCanvasElement" required>
+  Target canvas element for the WebGPU context.
+</ParamField>
+<ParamField path="registry" type="FrameRegistry" required>
+  Frame registry instance driving the scheduler. Create with `createFrameRegistry`.
+</ParamField>
+<ParamField path="size" type="CurrentWritable<{ width: number; height: number }>" required>
+  Writable store updated by the loop on resize events.
+</ParamField>
+<ParamField path="dpr" type="CurrentReadable<number>" required>
+  Readable DPR store read each frame.
+</ParamField>
+<ParamField path="maxDelta" type="CurrentReadable<number>" required>
+  Readable max-delta clamp store read each frame.
+</ParamField>
+<ParamField path="getMaterial" type="() => FragMaterial" required>
+  Provider returning the current active material. Called each frame so the loop can
+  detect material changes and rebuild the renderer.
+</ParamField>
+<ParamField path="getRenderTargets" type="() => RenderTargetDefinitionMap" required>
+  Provider returning current named render target definitions.
+</ParamField>
+<ParamField path="getPasses" type="() => AnyPass[]" required>
+  Provider returning current render and compute passes.
+</ParamField>
+<ParamField path="getClearColor" type="() => [number, number, number, number]" required>
+  Provider returning the active clear color as an RGBA tuple.
+</ParamField>
+<ParamField path="getOutputColorSpace" type="() => OutputColorSpace" required>
+  Provider returning the output color space (`'srgb'` or `'linear'`).
+</ParamField>
+<ParamField path="getAdapterOptions" type="() => GPURequestAdapterOptions | undefined" required>
+  Provider returning WebGPU adapter request options.
+</ParamField>
+<ParamField path="getDeviceDescriptor" type="() => GPUDeviceDescriptor | undefined" required>
+  Provider returning WebGPU device descriptor.
+</ParamField>
+<ParamField path="getOnError" type="() => ((report: MotionGPUErrorReport) => void) | undefined" required>
+  Provider returning an optional error callback.
+</ParamField>
+<ParamField path="reportError" type="(report: MotionGPUErrorReport | null) => void" required>
+  Called with the current error report (or `null` when cleared) so the adapter can
+  propagate the error state to reactive stores.
+</ParamField>
+
+### `MotionGPURuntimeLoop`
+
+<ResponseField name="requestFrame" type="() => void">
+  Schedules a `requestAnimationFrame` if one is not already pending.
+</ResponseField>
+<ResponseField name="invalidate" type="(token?: FrameInvalidationToken) => void">
+  Marks the registry as invalidated and schedules a frame.
+</ResponseField>
+<ResponseField name="advance" type="() => void">
+  Advances one frame in `manual` mode and schedules a frame.
+</ResponseField>
+<ResponseField name="destroy" type="() => void">
+  Cancels the pending animation frame, destroys the renderer, and clears the registry.
+</ResponseField>
+
+---
+
+## `createFrameRegistry`
+
+Creates an independent frame scheduler registry. Used internally by the runtime loop.
+Expose from adapters or use directly for headless scheduling scenarios.
+
+```typescript
+function createFrameRegistry(options?: {
+  renderMode?: 'always' | 'on-demand' | 'manual';
+  autoRender?: boolean;
+  maxDelta?: number;
+  profilingEnabled?: boolean;
+  profilingWindow?: number;
+  diagnosticsEnabled?: boolean;
+}): FrameRegistry
+```
+
+Available from `@motion-core/motion-gpu/advanced` and both adapter advanced entrypoints.
+
+<ParamField path="options.renderMode" type="'always' | 'on-demand' | 'manual'" default="'always'">
+  Initial render scheduling mode.
+</ParamField>
+<ParamField path="options.autoRender" type="boolean" default="true">
+  Initial auto-render state.
+</ParamField>
+<ParamField path="options.maxDelta" type="number" default="0.1">
+  Initial maximum frame delta clamp in seconds.
+</ParamField>
+<ParamField path="options.profilingEnabled" type="boolean" default="false">
+  Initial profiling state.
+</ParamField>
+<ParamField path="options.profilingWindow" type="number" default="120">
+  Initial profiling history window in frames.
+</ParamField>
+<ParamField path="options.diagnosticsEnabled" type="boolean" default="false">
+  Initial diagnostics state. Shares the internal toggle with `profilingEnabled`.
+</ParamField>
+
+Returns a `FrameRegistry` exposing `register`, `run`, `invalidate`, `advance`,
+`shouldRender`, `endFrame`, `createStage`, `getStage`, and all profiling/diagnostics
+accessors. See the `MotionGPUScheduler` surface in [`useMotionGPU`](/api/hooks#usemotiongpu)
+for the public subset.
+
+---
+
+## `loadTexturesFromUrls`
+
+Batch texture loading utility. Loads multiple textures in parallel from URL strings,
+returning a `LoadedTexture[]` in input order. All textures or none — if any request
+fails, all loaded bitmaps are disposed and the error is rethrown.
+
+```typescript
+async function loadTexturesFromUrls(
+  urls: string[],
+  options?: TextureLoadOptions
+): Promise<LoadedTexture[]>
+```
+
+Available from `@motion-core/motion-gpu/advanced` and both adapter advanced entrypoints.
+
+<Note>
+  For reactive per-component texture loading with abort handling, use
+  [`useTexture`](/api/hooks#usetexture) instead. `loadTexturesFromUrls` is intended
+  for imperative loading pipelines outside of component lifecycle.
+</Note>
+
+### Example
+
+```typescript
+import { loadTexturesFromUrls } from '@motion-core/motion-gpu/advanced';
+
+const textures = await loadTexturesFromUrls(
+  ['/textures/albedo.png', '/textures/normal.png'],
+  { colorSpace: 'srgb', generateMipmaps: true }
+);
+
+// Use textures[0].source, textures[1].source ...
+
+// Clean up when done
+textures.forEach((t) => t.dispose());
+```
+
+---
+
+## `toMotionGPUErrorReport`
+
+Normalizes any unknown thrown value into a structured `MotionGPUErrorReport`. Used
+internally by the runtime loop and `useTexture`, and exposed for use in custom error
+boundaries and logging pipelines.
+
+```typescript
+function toMotionGPUErrorReport(
+  error: unknown,
+  phase: 'initialization' | 'render'
+): MotionGPUErrorReport
+```
+
+Available from `@motion-core/motion-gpu/advanced` and both adapter advanced entrypoints.
+
+### Parameters
+
+<ParamField path="error" type="unknown" required>
+  Any thrown value: `Error`, `string`, or unknown. WebGPU/WGSL compilation errors with
+  attached diagnostic payloads are automatically parsed for source location and line info.
+</ParamField>
+
+<ParamField path="phase" type="'initialization' | 'render'" required>
+  The runtime phase during which the error occurred.
+</ParamField>
+
+### Return value: `MotionGPUErrorReport`
+
+<ResponseField name="code" type="MotionGPUErrorCode">
+  Stable machine-readable category code (e.g. `'WGSL_COMPILATION_FAILED'`,
+  `'WEBGPU_UNAVAILABLE'`, `'TEXTURE_REQUEST_FAILED'`).
+</ResponseField>
+<ResponseField name="severity" type="'error' | 'fatal'">
+  Severity level. `'fatal'` indicates the runtime cannot recover without full
+  re-initialization or a browser change.
+</ResponseField>
+<ResponseField name="recoverable" type="boolean">
+  Whether the runtime may recover automatically without re-creating the renderer.
+</ResponseField>
+<ResponseField name="title" type="string">Short category title for UI display.</ResponseField>
+<ResponseField name="message" type="string">Primary human-readable error message.</ResponseField>
+<ResponseField name="hint" type="string">Suggested remediation hint.</ResponseField>
+<ResponseField name="details" type="string[]">
+  Additional parsed detail lines (e.g., secondary WGSL error lines).
+</ResponseField>
+<ResponseField name="stack" type="string[]">
+  Stack trace lines when available.
+</ResponseField>
+<ResponseField name="rawMessage" type="string">
+  Original unmodified error message.
+</ResponseField>
+<ResponseField name="phase" type="'initialization' | 'render'">
+  Phase in which the error occurred.
+</ResponseField>
+<ResponseField name="source" type="MotionGPUErrorSource | null">
+  Parsed source context for shader compilation errors with file, line, column, and a
+  code snippet with the offending line highlighted.
+</ResponseField>
+<ResponseField name="context" type="MotionGPUErrorContext | null">
+  Optional runtime context snapshot with material signature, pass graph info, and
+  active render target names.
+</ResponseField>
+
+### Example
+
+```typescript
+import { toMotionGPUErrorReport } from '@motion-core/motion-gpu/advanced';
+
+try {
+  await someGpuOperation();
+} catch (error) {
+  const report = toMotionGPUErrorReport(error, 'initialization');
+  console.error(`[${report.code}] ${report.title}: ${report.message}`);
+  console.info(`Hint: ${report.hint}`);
+  if (report.source) {
+    console.info(`Source: ${report.source.location}`);
+  }
+}
+```

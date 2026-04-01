@@ -1,0 +1,1689 @@
+---
+title: "TypeScript Types"
+description: "Complete reference for all exported TypeScript types in @motion-core/motion-gpu."
+---
+
+This page documents every public TypeScript type exported from `@motion-core/motion-gpu`. Types are organized by domain. All definitions are drawn directly from the runtime source.
+
+---
+
+## Material types
+
+### `FragMaterialInput`
+
+The raw input object accepted by [`defineMaterial`](/api/define-material). All fields except `fragment` are optional.
+
+```typescript
+interface FragMaterialInput<
+  TUniformKey extends string = string,
+  TTextureKey extends string = string,
+  TDefineKey extends string = string,
+  TIncludeKey extends string = string,
+  TStorageBufferKey extends string = string
+> {
+  fragment: string;
+  uniforms?: UniformMap<TUniformKey>;
+  textures?: TextureDefinitionMap<TTextureKey>;
+  defines?: MaterialDefines<TDefineKey>;
+  includes?: MaterialIncludes<TIncludeKey>;
+  storageBuffers?: StorageBufferDefinitionMap<TStorageBufferKey>;
+}
+```
+
+<ResponseField name="fragment" type="string" required>
+  WGSL source string. Must contain an entrypoint with the exact signature `fn frag(uv: vec2f) -> vec4f`.
+</ResponseField>
+
+<ResponseField name="uniforms" type="UniformMap<TUniformKey>">
+  Initial uniform values keyed by WGSL identifier names.
+</ResponseField>
+
+<ResponseField name="textures" type="TextureDefinitionMap<TTextureKey>">
+  Texture slot definitions keyed by texture uniform names.
+</ResponseField>
+
+<ResponseField name="defines" type="MaterialDefines<TDefineKey>">
+  Compile-time constants injected as WGSL `const` declarations before the fragment shader.
+</ResponseField>
+
+<ResponseField name="includes" type="MaterialIncludes<TIncludeKey>">
+  WGSL code chunks resolved by `#include <name>` directives in the fragment shader.
+</ResponseField>
+
+<ResponseField name="storageBuffers" type="StorageBufferDefinitionMap<TStorageBufferKey>">
+  Storage buffer definitions for compute shader workflows.
+</ResponseField>
+
+---
+
+### `FragMaterial`
+
+The frozen, immutable material object returned by `defineMaterial`. Safe to share across components and renders.
+
+```typescript
+interface FragMaterial<
+  TUniformKey extends string = string,
+  TTextureKey extends string = string,
+  TDefineKey extends string = string,
+  TIncludeKey extends string = string,
+  TStorageBufferKey extends string = string
+> {
+  readonly fragment: string;
+  readonly uniforms: Readonly<UniformMap<TUniformKey>>;
+  readonly textures: Readonly<TextureDefinitionMap<TTextureKey>>;
+  readonly defines: Readonly<MaterialDefines<TDefineKey>>;
+  readonly includes: Readonly<MaterialIncludes<TIncludeKey>>;
+  readonly storageBuffers: Readonly<StorageBufferDefinitionMap<TStorageBufferKey>>;
+}
+```
+
+<Note>
+  All fields are deeply frozen. Do not attempt to mutate a `FragMaterial` — always create a new one with `defineMaterial`.
+</Note>
+
+<ResponseField name="fragment" type="string">
+  Original WGSL source string as supplied to `defineMaterial`.
+</ResponseField>
+
+<ResponseField name="uniforms" type="Readonly<UniformMap<TUniformKey>>">
+  Frozen uniform value map. Values are cloned during material creation.
+</ResponseField>
+
+<ResponseField name="textures" type="Readonly<TextureDefinitionMap<TTextureKey>>">
+  Frozen texture definition map.
+</ResponseField>
+
+<ResponseField name="defines" type="Readonly<MaterialDefines<TDefineKey>>">
+  Frozen define map used for WGSL const injection.
+</ResponseField>
+
+<ResponseField name="includes" type="Readonly<MaterialIncludes<TIncludeKey>>">
+  Frozen include source map.
+</ResponseField>
+
+<ResponseField name="storageBuffers" type="Readonly<StorageBufferDefinitionMap<TStorageBufferKey>>">
+  Frozen storage buffer definition map.
+</ResponseField>
+
+---
+
+### `ResolvedMaterial`
+
+A fully resolved, renderer-ready snapshot derived from a `FragMaterial`. Produced internally by `resolveMaterial` and cached per material instance.
+
+```typescript
+interface ResolvedMaterial<
+  TUniformKey extends string = string,
+  TTextureKey extends string = string,
+  TIncludeKey extends string = string,
+  TStorageBufferKey extends string = string
+> {
+  fragmentWgsl: string;
+  fragmentLineMap: MaterialLineMap;
+  uniforms: UniformMap<TUniformKey>;
+  textures: TextureDefinitionMap<TTextureKey>;
+  uniformLayout: UniformLayout;
+  textureKeys: TTextureKey[];
+  signature: string;
+  fragmentSource: string;
+  includeSources: MaterialIncludes<TIncludeKey>;
+  defineBlockSource: string;
+  source: Readonly<MaterialSourceMetadata> | null;
+  storageBufferKeys: TStorageBufferKey[];
+  storageTextureKeys: TTextureKey[];
+}
+```
+
+<ResponseField name="fragmentWgsl" type="string">
+  Final WGSL fragment source after define injection and include expansion.
+</ResponseField>
+
+<ResponseField name="fragmentLineMap" type="MaterialLineMap">
+  1-based mapping from generated fragment lines back to user source lines. Used for shader error diagnostics.
+</ResponseField>
+
+<ResponseField name="uniforms" type="UniformMap<TUniformKey>">
+  Cloned uniform values from the source material.
+</ResponseField>
+
+<ResponseField name="textures" type="TextureDefinitionMap<TTextureKey>">
+  Cloned texture definitions from the source material.
+</ResponseField>
+
+<ResponseField name="uniformLayout" type="UniformLayout">
+  Packed GPU uniform buffer layout resolved using WGSL alignment rules.
+</ResponseField>
+
+<ResponseField name="textureKeys" type="TTextureKey[]">
+  Sorted array of texture keys derived from the texture definitions map.
+</ResponseField>
+
+<ResponseField name="signature" type="string">
+  Deterministic JSON signature used for renderer cache invalidation. Changes when shader, uniforms, textures, or storage buffers change.
+</ResponseField>
+
+<ResponseField name="fragmentSource" type="string">
+  Original user fragment source before preprocessing.
+</ResponseField>
+
+<ResponseField name="includeSources" type="MaterialIncludes<TIncludeKey>">
+  Normalized include source map.
+</ResponseField>
+
+<ResponseField name="defineBlockSource" type="string">
+  Deterministic define block WGSL used for diagnostics source mapping.
+</ResponseField>
+
+<ResponseField name="source" type="Readonly<MaterialSourceMetadata> | null">
+  Optional callsite metadata captured at `defineMaterial` time, used for diagnostics.
+</ResponseField>
+
+<ResponseField name="storageBufferKeys" type="TStorageBufferKey[]">
+  Sorted array of storage buffer keys. Empty when no storage buffers are declared.
+</ResponseField>
+
+<ResponseField name="storageTextureKeys" type="TTextureKey[]">
+  Sorted array of texture keys where `storage: true`. Empty when no storage textures are declared.
+</ResponseField>
+
+---
+
+### `MaterialDefineValue`
+
+Allowed value types for WGSL `const` define injection.
+
+```typescript
+type MaterialDefineValue = boolean | number | TypedMaterialDefineValue;
+```
+
+Plain `boolean` and `number` values are inferred as WGSL `bool`, `f32`, or `i32`. Use `TypedMaterialDefineValue` for explicit type control.
+
+---
+
+### `TypedMaterialDefineValue`
+
+Explicitly typed compile-time define declaration with a WGSL type tag.
+
+```typescript
+type TypedMaterialDefineValue =
+  | { type: 'bool'; value: boolean }
+  | { type: 'f32' | 'i32' | 'u32'; value: number };
+```
+
+<ResponseField name="type" type="'bool' | 'f32' | 'i32' | 'u32'" required>
+  WGSL scalar type for the constant.
+</ResponseField>
+
+<ResponseField name="value" type="boolean | number" required>
+  Literal value matching the selected WGSL type.
+</ResponseField>
+
+---
+
+### `MaterialDefines`
+
+Define map keyed by uniform-compatible identifier names.
+
+```typescript
+type MaterialDefines<TKey extends string = string> = Record<TKey, MaterialDefineValue>;
+```
+
+---
+
+### `MaterialIncludes`
+
+Include map keyed by the identifier used in `#include <name>` directives.
+
+```typescript
+type MaterialIncludes<TKey extends string = string> = Record<TKey, string>;
+```
+
+---
+
+## Uniform types
+
+### `UniformType`
+
+WGSL-compatible uniform primitive and aggregate types supported by MotionGPU.
+
+```typescript
+type UniformType = 'f32' | 'vec2f' | 'vec3f' | 'vec4f' | 'mat4x4f';
+```
+
+| Value | WGSL type | Runtime shape |
+|-------|-----------|---------------|
+| `'f32'` | `f32` | `number` |
+| `'vec2f'` | `vec2f` | `[number, number]` |
+| `'vec3f'` | `vec3f` | `[number, number, number]` |
+| `'vec4f'` | `vec4f` | `[number, number, number, number]` |
+| `'mat4x4f'` | `mat4x4f` | `number[] \| Float32Array` |
+
+---
+
+### `UniformValue`
+
+All accepted input shapes for a single uniform value.
+
+```typescript
+type UniformValue =
+  | number
+  | [number, number]
+  | [number, number, number]
+  | [number, number, number, number]
+  | TypedUniform<'f32'>
+  | TypedUniform<'vec2f'>
+  | TypedUniform<'vec3f'>
+  | TypedUniform<'vec4f'>
+  | TypedUniform<'mat4x4f'>;
+```
+
+Bare number literals and tuples are accepted alongside explicitly typed `TypedUniform` objects. MotionGPU infers the WGSL type from the runtime shape.
+
+---
+
+### `TypedUniform`
+
+An explicitly typed uniform declaration pairing a WGSL type tag with its runtime value.
+
+```typescript
+interface TypedUniform<
+  TType extends UniformType = UniformType,
+  TValue extends UniformValueByType[TType] = UniformValueByType[TType]
+> {
+  type: TType;
+  value: TValue;
+}
+```
+
+<ResponseField name="type" type="UniformType" required>
+  WGSL type tag. Determines how `value` is packed into the GPU buffer.
+</ResponseField>
+
+<ResponseField name="value" type="UniformValueByType[TType]" required>
+  Runtime value matching the declared `type`. See `UniformValue` for per-type shapes.
+</ResponseField>
+
+---
+
+### `UniformMat4Value`
+
+Accepted value formats for `mat4x4f` uniforms.
+
+```typescript
+type UniformMat4Value = number[] | Float32Array;
+```
+
+---
+
+### `UniformMap`
+
+Uniform map keyed by WGSL identifier names.
+
+```typescript
+type UniformMap<TKey extends string = string> = Record<TKey, UniformValue>;
+```
+
+---
+
+### `UniformLayout`
+
+GPU uniform buffer layout resolved from a `UniformMap` using WGSL std140/std430 alignment rules.
+
+```typescript
+interface UniformLayout {
+  entries: UniformLayoutEntry[];
+  byName: Record<string, UniformLayoutEntry>;
+  byteLength: number;
+}
+```
+
+<ResponseField name="entries" type="UniformLayoutEntry[]">
+  Layout entries sorted by uniform name.
+</ResponseField>
+
+<ResponseField name="byName" type="Record<string, UniformLayoutEntry>">
+  Fast lookup table keyed by uniform name.
+</ResponseField>
+
+<ResponseField name="byteLength" type="number">
+  Total uniform buffer size in bytes after alignment padding.
+</ResponseField>
+
+---
+
+### `UniformLayoutEntry`
+
+Resolved metadata for a single uniform field inside the packed uniform buffer.
+
+```typescript
+interface UniformLayoutEntry {
+  name: string;
+  type: UniformType;
+  offset: number;
+  size: number;
+}
+```
+
+<ResponseField name="name" type="string">
+  Uniform field name matching the WGSL identifier.
+</ResponseField>
+
+<ResponseField name="type" type="UniformType">
+  WGSL type tag for this field.
+</ResponseField>
+
+<ResponseField name="offset" type="number">
+  Byte offset of this field within the packed uniform buffer.
+</ResponseField>
+
+<ResponseField name="size" type="number">
+  Field byte size excluding trailing alignment padding.
+</ResponseField>
+
+---
+
+## Texture types
+
+### `TextureDefinition`
+
+Per-texture sampling and upload configuration declared in a material.
+
+```typescript
+interface TextureDefinition {
+  source?: TextureValue;
+  colorSpace?: 'srgb' | 'linear';
+  flipY?: boolean;
+  generateMipmaps?: boolean;
+  premultipliedAlpha?: boolean;
+  update?: TextureUpdateMode;
+  anisotropy?: number;
+  filter?: GPUFilterMode;
+  addressModeU?: GPUAddressMode;
+  addressModeV?: GPUAddressMode;
+  storage?: boolean;
+  format?: GPUTextureFormat;
+  width?: number;
+  height?: number;
+  fragmentVisible?: boolean;
+}
+```
+
+<ResponseField name="source" type="TextureValue">
+  Default or initial texture value for this slot.
+</ResponseField>
+
+<ResponseField name="colorSpace" type="'srgb' | 'linear'">
+  Source color space used for GPU format and decode decisions. Defaults to `'srgb'`.
+</ResponseField>
+
+<ResponseField name="flipY" type="boolean">
+  Flips the texture vertically during upload. Defaults to `false`.
+</ResponseField>
+
+<ResponseField name="generateMipmaps" type="boolean">
+  Enables mipmap generation after upload. Defaults to `false`.
+</ResponseField>
+
+<ResponseField name="premultipliedAlpha" type="boolean">
+  Enables premultiplied-alpha upload mode. Defaults to `false`.
+</ResponseField>
+
+<ResponseField name="update" type="TextureUpdateMode">
+  Dynamic source update strategy. See `TextureUpdateMode`.
+</ResponseField>
+
+<ResponseField name="anisotropy" type="number">
+  Sampler anisotropy level. Clamped to device limits internally.
+</ResponseField>
+
+<ResponseField name="filter" type="GPUFilterMode">
+  Min/mag filter mode for the sampler (`'nearest'` or `'linear'`).
+</ResponseField>
+
+<ResponseField name="addressModeU" type="GPUAddressMode">
+  U-axis texture address mode (`'clamp-to-edge'`, `'repeat'`, `'mirror-repeat'`).
+</ResponseField>
+
+<ResponseField name="addressModeV" type="GPUAddressMode">
+  V-axis texture address mode.
+</ResponseField>
+
+<ResponseField name="storage" type="boolean">
+  When `true`, the texture is also writable by compute passes as a storage texture. Requires `format`.
+</ResponseField>
+
+<ResponseField name="format" type="GPUTextureFormat">
+  Texture format override. Required when `storage` is `true`. Must be a storage-compatible format.
+</ResponseField>
+
+<ResponseField name="width" type="number">
+  Explicit texture width in pixels. Required for storage textures without a source.
+</ResponseField>
+
+<ResponseField name="height" type="number">
+  Explicit texture height in pixels. Required for storage textures without a source.
+</ResponseField>
+
+<ResponseField name="fragmentVisible" type="boolean">
+  When `true` (default), the texture is sampled in the fragment shader. Set to `false` for compute-only textures.
+</ResponseField>
+
+---
+
+### `TextureSource`
+
+Runtime texture source types accepted by WebGPU upload APIs.
+
+```typescript
+type TextureSource =
+  | ImageBitmap
+  | HTMLImageElement
+  | HTMLCanvasElement
+  | HTMLVideoElement;
+```
+
+---
+
+### `TextureData`
+
+Texture payload with source and optional per-upload overrides.
+
+```typescript
+interface TextureData {
+  source: TextureSource;
+  width?: number;
+  height?: number;
+  colorSpace?: 'srgb' | 'linear';
+  flipY?: boolean;
+  premultipliedAlpha?: boolean;
+  generateMipmaps?: boolean;
+  update?: TextureUpdateMode;
+}
+```
+
+<ResponseField name="source" type="TextureSource" required>
+  GPU-uploadable image source.
+</ResponseField>
+
+<ResponseField name="width" type="number">
+  Optional explicit width override.
+</ResponseField>
+
+<ResponseField name="height" type="number">
+  Optional explicit height override.
+</ResponseField>
+
+<ResponseField name="colorSpace" type="'srgb' | 'linear'">
+  Optional runtime color space override for this upload.
+</ResponseField>
+
+<ResponseField name="flipY" type="boolean">
+  Optional runtime flip-y override for this upload.
+</ResponseField>
+
+<ResponseField name="premultipliedAlpha" type="boolean">
+  Optional runtime premultiplied-alpha override for this upload.
+</ResponseField>
+
+<ResponseField name="generateMipmaps" type="boolean">
+  Optional runtime mipmap generation override for this upload.
+</ResponseField>
+
+<ResponseField name="update" type="TextureUpdateMode">
+  Optional runtime update strategy override for this upload.
+</ResponseField>
+
+---
+
+### `TextureValue`
+
+Union of all accepted texture input shapes.
+
+```typescript
+type TextureValue = TextureData | TextureSource | null;
+```
+
+Pass `null` to clear a texture slot at runtime.
+
+---
+
+### `TextureMap`
+
+Runtime texture value map keyed by texture uniform names.
+
+```typescript
+type TextureMap<TKey extends string = string> = Record<TKey, TextureValue>;
+```
+
+---
+
+### `TextureUpdateMode`
+
+Update strategy controlling when a dynamic texture source is re-uploaded to the GPU.
+
+```typescript
+type TextureUpdateMode = 'once' | 'onInvalidate' | 'perFrame';
+```
+
+| Value | Behavior |
+|-------|----------|
+| `'once'` | Upload once on first use. Never re-uploaded. |
+| `'onInvalidate'` | Re-upload when the frame is invalidated. |
+| `'perFrame'` | Re-upload every frame. Use for video or canvas sources. |
+
+---
+
+## Storage buffer types
+
+### `StorageBufferDefinition`
+
+Definition of a single GPU storage buffer resource.
+
+```typescript
+interface StorageBufferDefinition {
+  size: number;
+  type: StorageBufferType;
+  access?: StorageBufferAccess;
+  initialData?: Float32Array | Uint32Array | Int32Array;
+}
+```
+
+<ResponseField name="size" type="number" required>
+  Buffer size in bytes. Must be greater than 0 and a multiple of 4.
+</ResponseField>
+
+<ResponseField name="type" type="StorageBufferType" required>
+  WGSL type annotation used for shader binding codegen.
+</ResponseField>
+
+<ResponseField name="access" type="StorageBufferAccess">
+  Access mode in compute shaders. Defaults to `'read-write'`.
+</ResponseField>
+
+<ResponseField name="initialData" type="Float32Array | Uint32Array | Int32Array">
+  Optional initial data uploaded to the buffer on creation. Cloned during material creation.
+</ResponseField>
+
+---
+
+### `StorageBufferType`
+
+All supported WGSL element types for storage buffers.
+
+```typescript
+type StorageBufferType =
+  | 'array<f32>'
+  | 'array<vec2f>'
+  | 'array<vec3f>'
+  | 'array<vec4f>'
+  | 'array<u32>'
+  | 'array<i32>'
+  | 'array<vec4u>'
+  | 'array<vec4i>';
+```
+
+---
+
+### `StorageBufferAccess`
+
+Access mode controlling read/write permissions in compute shaders.
+
+```typescript
+type StorageBufferAccess = 'read' | 'read-write';
+```
+
+Use `'read'` for buffers that are only consumed by shaders. Use `'read-write'` (default) for buffers that shaders also write to.
+
+---
+
+### `StorageBufferDefinitionMap`
+
+Named storage buffer definition map.
+
+```typescript
+type StorageBufferDefinitionMap<TKey extends string = string> = Record<TKey, StorageBufferDefinition>;
+```
+
+---
+
+## Render pass types
+
+### `RenderPass`
+
+Formal render pass contract used by the MotionGPU render graph. Extends `RenderPassFlags`.
+
+```typescript
+interface RenderPass extends RenderPassFlags {
+  enabled?: boolean;
+  needsSwap?: boolean;
+  input?: RenderPassInputSlot;
+  output?: RenderPassOutputSlot;
+  setSize?: (width: number, height: number) => void;
+  render: (context: RenderPassContext) => void;
+  dispose?: () => void;
+}
+```
+
+<ResponseField name="enabled" type="boolean">
+  Enables or disables this pass without removing it from the render graph. Defaults to `true`.
+</ResponseField>
+
+<ResponseField name="needsSwap" type="boolean">
+  When `true`, triggers a source/target ping-pong buffer swap after this pass renders.
+</ResponseField>
+
+<ResponseField name="input" type="RenderPassInputSlot">
+  Input slot consumed by this pass. Defaults to `'source'`.
+</ResponseField>
+
+<ResponseField name="output" type="RenderPassOutputSlot">
+  Output slot written by this pass. Defaults to `'target'`.
+</ResponseField>
+
+<ResponseField name="setSize" type="(width: number, height: number) => void">
+  Called by the runtime when the canvas size or DPR changes.
+</ResponseField>
+
+<ResponseField name="render" type="(context: RenderPassContext) => void" required>
+  Called each frame to execute pass commands. Receives a `RenderPassContext`.
+</ResponseField>
+
+<ResponseField name="dispose" type="() => void">
+  Called when the renderer is destroyed. Release pass-owned GPU resources here.
+</ResponseField>
+
+---
+
+### `RenderPassFlags`
+
+Per-pass render attachment flags.
+
+```typescript
+interface RenderPassFlags {
+  clear?: boolean;
+  clearColor?: [number, number, number, number];
+  preserve?: boolean;
+}
+```
+
+<ResponseField name="clear" type="boolean">
+  Clears the output attachment before drawing. Defaults to `false`.
+</ResponseField>
+
+<ResponseField name="clearColor" type="[number, number, number, number]">
+  RGBA clear color used when `clear` is `true`. Values in `[0, 1]` range.
+</ResponseField>
+
+<ResponseField name="preserve" type="boolean">
+  Stores the output attachment contents after the pass completes. Defaults to `true`.
+</ResponseField>
+
+---
+
+### `RenderPassContext`
+
+Execution context passed to `RenderPass.render`. Extends `Required<RenderPassFlags>`.
+
+```typescript
+interface RenderPassContext extends Required<RenderPassFlags> {
+  device: GPUDevice;
+  commandEncoder: GPUCommandEncoder;
+  source: RenderTarget;
+  target: RenderTarget;
+  canvas: RenderTarget;
+  input: RenderTarget;
+  output: RenderTarget;
+  targets: Readonly<Record<string, RenderTarget>>;
+  time: number;
+  delta: number;
+  width: number;
+  height: number;
+  beginRenderPass: (options?: {
+    view?: GPUTextureView;
+    clear?: boolean;
+    clearColor?: [number, number, number, number];
+    preserve?: boolean;
+  }) => GPURenderPassEncoder;
+}
+```
+
+<ResponseField name="device" type="GPUDevice">
+  The active WebGPU device for this frame.
+</ResponseField>
+
+<ResponseField name="commandEncoder" type="GPUCommandEncoder">
+  Shared command encoder for the current frame. Submit commands through this encoder.
+</ResponseField>
+
+<ResponseField name="source" type="RenderTarget">
+  Current source ping-pong surface.
+</ResponseField>
+
+<ResponseField name="target" type="RenderTarget">
+  Current target ping-pong surface.
+</ResponseField>
+
+<ResponseField name="canvas" type="RenderTarget">
+  Current frame canvas surface used for final presentation.
+</ResponseField>
+
+<ResponseField name="input" type="RenderTarget">
+  Resolved input surface for this pass (based on `RenderPass.input`).
+</ResponseField>
+
+<ResponseField name="output" type="RenderTarget">
+  Resolved output surface for this pass (based on `RenderPass.output`).
+</ResponseField>
+
+<ResponseField name="targets" type="Readonly<Record<string, RenderTarget>>">
+  Snapshot of all named runtime render targets for this frame.
+</ResponseField>
+
+<ResponseField name="time" type="number">
+  Elapsed time in seconds since the renderer started.
+</ResponseField>
+
+<ResponseField name="delta" type="number">
+  Frame delta time in seconds.
+</ResponseField>
+
+<ResponseField name="width" type="number">
+  Frame width in pixels (canvas width × DPR).
+</ResponseField>
+
+<ResponseField name="height" type="number">
+  Frame height in pixels (canvas height × DPR).
+</ResponseField>
+
+<ResponseField name="beginRenderPass" type="function">
+  Convenience method to begin a color render pass targeting the resolved output (or a provided view). Returns a `GPURenderPassEncoder`.
+</ResponseField>
+
+---
+
+### `RenderPassInputSlot`
+
+Input slot identifier used by render passes.
+
+```typescript
+type RenderPassInputSlot = 'source' | 'target' | RenderPassNamedSlot;
+```
+
+`'source'` and `'target'` are built-in ping-pong slots. Any other string resolves to a named render target key.
+
+---
+
+### `RenderPassOutputSlot`
+
+Output slot identifier used by render passes.
+
+```typescript
+type RenderPassOutputSlot = 'source' | 'target' | 'canvas' | RenderPassNamedSlot;
+```
+
+`'canvas'` writes directly to the canvas surface. `'source'` and `'target'` write to ping-pong slots.
+
+---
+
+### `ComputePassLike`
+
+Minimal interface for compute passes in the render graph. Compute passes do not participate in slot routing.
+
+```typescript
+interface ComputePassLike {
+  readonly isCompute: true;
+  enabled?: boolean;
+  setSize?: (width: number, height: number) => void;
+  dispose?: () => void;
+}
+```
+
+<ResponseField name="isCompute" type="true" required>
+  Discriminant flag identifying this as a compute pass. Must be `true`.
+</ResponseField>
+
+<ResponseField name="enabled" type="boolean">
+  Enables or disables this pass without removing it from the graph.
+</ResponseField>
+
+<ResponseField name="setSize" type="(width: number, height: number) => void">
+  Called by the runtime on canvas resize events.
+</ResponseField>
+
+<ResponseField name="dispose" type="() => void">
+  Called when the renderer is destroyed. Release compute-owned GPU resources here.
+</ResponseField>
+
+---
+
+### `AnyPass`
+
+Union type for all pass types accepted by the render graph.
+
+```typescript
+type AnyPass = RenderPass | ComputePassLike;
+```
+
+---
+
+## Render target types
+
+### `RenderTargetDefinition`
+
+Declarative render target definition for multi-pass or post-processing pipelines.
+
+```typescript
+interface RenderTargetDefinition {
+  width?: number;
+  height?: number;
+  scale?: number;
+  format?: GPUTextureFormat;
+}
+```
+
+<ResponseField name="width" type="number">
+  Explicit target width in pixels. If omitted, derived from `scale * canvasWidth`.
+</ResponseField>
+
+<ResponseField name="height" type="number">
+  Explicit target height in pixels. If omitted, derived from `scale * canvasHeight`.
+</ResponseField>
+
+<ResponseField name="scale" type="number">
+  Canvas-relative scale factor for implicit dimensions. Defaults to `1`.
+</ResponseField>
+
+<ResponseField name="format" type="GPUTextureFormat">
+  Texture format override. Defaults to the canvas presentation format.
+</ResponseField>
+
+---
+
+### `RenderTarget`
+
+Runtime render target handle exposed to render passes during frame execution.
+
+```typescript
+interface RenderTarget {
+  texture: GPUTexture;
+  view: GPUTextureView;
+  width: number;
+  height: number;
+  format: GPUTextureFormat;
+}
+```
+
+<ResponseField name="texture" type="GPUTexture">
+  Backing GPU texture for this render target.
+</ResponseField>
+
+<ResponseField name="view" type="GPUTextureView">
+  Default texture view for attachment and sampling.
+</ResponseField>
+
+<ResponseField name="width" type="number">
+  Render target width in pixels.
+</ResponseField>
+
+<ResponseField name="height" type="number">
+  Render target height in pixels.
+</ResponseField>
+
+<ResponseField name="format" type="GPUTextureFormat">
+  GPU texture format of this render target.
+</ResponseField>
+
+---
+
+### `RenderTargetDefinitionMap`
+
+Named render target definitions keyed by output slot names.
+
+```typescript
+type RenderTargetDefinitionMap<TKey extends string = string> = Record<TKey, RenderTargetDefinition>;
+```
+
+---
+
+## Frame & scheduler types
+
+### `FrameState`
+
+Mutable per-frame state object passed to all `useFrame` callbacks.
+
+```typescript
+interface FrameState {
+  time: number;
+  delta: number;
+  setUniform: (name: string, value: UniformValue) => void;
+  setTexture: (name: string, value: TextureValue) => void;
+  writeStorageBuffer: (name: string, data: ArrayBufferView, options?: { offset?: number }) => void;
+  readStorageBuffer: (name: string) => Promise<ArrayBuffer>;
+  invalidate: (token?: FrameInvalidationToken) => void;
+  advance: () => void;
+  renderMode: RenderMode;
+  autoRender: boolean;
+  canvas: HTMLCanvasElement;
+}
+```
+
+<ResponseField name="time" type="number">
+  Elapsed time in seconds since the renderer started.
+</ResponseField>
+
+<ResponseField name="delta" type="number">
+  Frame delta time in seconds. Clamped to `maxDelta` from the scheduler.
+</ResponseField>
+
+<ResponseField name="setUniform" type="(name: string, value: UniformValue) => void">
+  Sets a uniform value for the current or next frame submission.
+</ResponseField>
+
+<ResponseField name="setTexture" type="(name: string, value: TextureValue) => void">
+  Sets a texture slot value for the current or next frame submission.
+</ResponseField>
+
+<ResponseField name="writeStorageBuffer" type="(name: string, data: ArrayBufferView, options?: { offset?: number }) => void">
+  Writes data to a named storage buffer. Enqueued and flushed during frame submission. Supports an optional byte `offset`.
+</ResponseField>
+
+<ResponseField name="readStorageBuffer" type="(name: string) => Promise<ArrayBuffer>">
+  Async GPU readback of a named storage buffer's contents.
+</ResponseField>
+
+<ResponseField name="invalidate" type="(token?: FrameInvalidationToken) => void">
+  Marks the frame as needing a render in `on-demand` mode. Accepts an optional deduplication token.
+</ResponseField>
+
+<ResponseField name="advance" type="() => void">
+  Requests a single render in `manual` mode.
+</ResponseField>
+
+<ResponseField name="renderMode" type="RenderMode">
+  Current render mode for this frame.
+</ResponseField>
+
+<ResponseField name="autoRender" type="boolean">
+  Whether automatic rendering is currently enabled.
+</ResponseField>
+
+<ResponseField name="canvas" type="HTMLCanvasElement">
+  The active canvas element this renderer targets.
+</ResponseField>
+
+---
+
+### `RenderMode`
+
+Frame submission strategy for the scheduler.
+
+```typescript
+type RenderMode = 'always' | 'on-demand' | 'manual';
+```
+
+| Value | Behavior |
+|-------|----------|
+| `'always'` | Renders every RAF tick unconditionally. |
+| `'on-demand'` | Renders only when the frame is invalidated. |
+| `'manual'` | Renders only when `advance()` is called explicitly. |
+
+---
+
+### `FrameInvalidationToken`
+
+A value identifying an invalidation source for deduplication in `on-demand` mode.
+
+```typescript
+type FrameInvalidationToken = string | number | symbol;
+```
+
+---
+
+### `UseFrameOptions`
+
+Options controlling task registration and scheduling behavior passed to `useFrame`.
+
+```typescript
+interface UseFrameOptions {
+  autoStart?: boolean;
+  autoInvalidate?: boolean;
+  invalidation?: FrameTaskInvalidation;
+  stage?: FrameKey | FrameStage;
+  before?: (FrameKey | FrameTask) | (FrameKey | FrameTask)[];
+  after?: (FrameKey | FrameTask) | (FrameKey | FrameTask)[];
+  running?: () => boolean;
+}
+```
+
+<ResponseField name="autoStart" type="boolean">
+  Whether the task starts in active state. Defaults to `true`.
+</ResponseField>
+
+<ResponseField name="autoInvalidate" type="boolean">
+  Whether task execution automatically invalidates the frame. Defaults to `true`.
+</ResponseField>
+
+<ResponseField name="invalidation" type="FrameTaskInvalidation">
+  Explicit task invalidation policy. Overrides `autoInvalidate` when provided.
+</ResponseField>
+
+<ResponseField name="stage" type="FrameKey | FrameStage">
+  Stage to register this task in. Defaults to the main stage.
+</ResponseField>
+
+<ResponseField name="before" type="(FrameKey | FrameTask) | (FrameKey | FrameTask)[]">
+  Tasks or keys that this task must run before.
+</ResponseField>
+
+<ResponseField name="after" type="(FrameKey | FrameTask) | (FrameKey | FrameTask)[]">
+  Tasks or keys that this task must run after.
+</ResponseField>
+
+<ResponseField name="running" type="() => boolean">
+  Dynamic predicate. When provided, the task only runs while this returns `true`.
+</ResponseField>
+
+---
+
+### `UseFrameResult`
+
+Handle returned by `useFrame` after task registration.
+
+```typescript
+interface UseFrameResult {
+  task: FrameTask;
+  start: () => void;
+  stop: () => void;
+  started: Subscribable<boolean>;
+}
+```
+
+<ResponseField name="task" type="FrameTask">
+  Registered task metadata including `key` and `stage`.
+</ResponseField>
+
+<ResponseField name="start" type="() => void">
+  Starts task execution.
+</ResponseField>
+
+<ResponseField name="stop" type="() => void">
+  Stops task execution.
+</ResponseField>
+
+<ResponseField name="started" type="Subscribable<boolean>">
+  Reactive readable indicating the effective running state of the task.
+</ResponseField>
+
+---
+
+### `FrameTask`
+
+Public metadata describing a registered frame task.
+
+```typescript
+interface FrameTask {
+  key: FrameKey;
+  stage: FrameKey;
+}
+```
+
+<ResponseField name="key" type="FrameKey">
+  Unique key identifying this task within the scheduler.
+</ResponseField>
+
+<ResponseField name="stage" type="FrameKey">
+  Key of the stage this task belongs to.
+</ResponseField>
+
+---
+
+### `FrameStage`
+
+Public metadata describing a scheduler stage.
+
+```typescript
+interface FrameStage {
+  key: FrameKey;
+}
+```
+
+<ResponseField name="key" type="FrameKey">
+  Unique key identifying this stage.
+</ResponseField>
+
+---
+
+### `FrameKey`
+
+Stable key type for frame tasks and stages.
+
+```typescript
+type FrameKey = string | symbol;
+```
+
+---
+
+### `FrameTaskInvalidation`
+
+Explicit invalidation policy for a frame task.
+
+```typescript
+type FrameTaskInvalidation =
+  | 'never'
+  | 'always'
+  | { mode?: 'never' | 'always'; token?: FrameTaskInvalidationToken }
+  | { mode: 'on-change'; token: FrameTaskInvalidationToken };
+```
+
+| Value | Behavior |
+|-------|----------|
+| `'never'` | Task never invalidates the frame. |
+| `'always'` | Task always invalidates the frame when it runs. |
+| `{ mode: 'on-change', token }` | Invalidates only when the resolved token value changes. |
+
+---
+
+### `FrameTaskInvalidationToken`
+
+Invalidation token value or a resolver function.
+
+```typescript
+type FrameTaskInvalidationToken =
+  | FrameInvalidationToken
+  | (() => FrameInvalidationToken | null | undefined);
+```
+
+---
+
+## Error types
+
+### `MotionGPUErrorReport`
+
+Structured error payload produced by `toMotionGPUErrorReport` and consumed by error overlays and `onError` handlers.
+
+```typescript
+interface MotionGPUErrorReport {
+  code: MotionGPUErrorCode;
+  severity: MotionGPUErrorSeverity;
+  recoverable: boolean;
+  title: string;
+  message: string;
+  hint: string;
+  details: string[];
+  stack: string[];
+  rawMessage: string;
+  phase: MotionGPUErrorPhase;
+  source: MotionGPUErrorSource | null;
+  context: MotionGPUErrorContext | null;
+}
+```
+
+<ResponseField name="code" type="MotionGPUErrorCode">
+  Stable machine-readable error category code. Use for programmatic error handling.
+</ResponseField>
+
+<ResponseField name="severity" type="MotionGPUErrorSeverity">
+  Severity level: `'error'` (may be recoverable) or `'fatal'` (requires page reload or renderer re-creation).
+</ResponseField>
+
+<ResponseField name="recoverable" type="boolean">
+  When `true`, the runtime may recover without full renderer re-creation.
+</ResponseField>
+
+<ResponseField name="title" type="string">
+  Short human-readable category title for display in error overlays.
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  Primary human-readable error message. May include source location for shader errors.
+</ResponseField>
+
+<ResponseField name="hint" type="string">
+  Suggested remediation hint targeted at the error category.
+</ResponseField>
+
+<ResponseField name="details" type="string[]">
+  Additional parsed details such as WGSL line errors beyond the primary message.
+</ResponseField>
+
+<ResponseField name="stack" type="string[]">
+  Stack trace lines when available, excluding the primary message line.
+</ResponseField>
+
+<ResponseField name="rawMessage" type="string">
+  Original unmodified error message string before any formatting.
+</ResponseField>
+
+<ResponseField name="phase" type="MotionGPUErrorPhase">
+  Runtime phase in which the error occurred.
+</ResponseField>
+
+<ResponseField name="source" type="MotionGPUErrorSource | null">
+  Optional structured source context for shader-related diagnostics.
+</ResponseField>
+
+<ResponseField name="context" type="MotionGPUErrorContext | null">
+  Optional runtime context snapshot including material signature and pass graph state.
+</ResponseField>
+
+---
+
+### `MotionGPUErrorCode`
+
+Stable machine-readable error category codes.
+
+```typescript
+type MotionGPUErrorCode =
+  | 'WEBGPU_UNAVAILABLE'
+  | 'WEBGPU_ADAPTER_UNAVAILABLE'
+  | 'WEBGPU_CONTEXT_UNAVAILABLE'
+  | 'WGSL_COMPILATION_FAILED'
+  | 'MATERIAL_PREPROCESS_FAILED'
+  | 'WEBGPU_DEVICE_LOST'
+  | 'WEBGPU_UNCAPTURED_ERROR'
+  | 'BIND_GROUP_MISMATCH'
+  | 'RUNTIME_RESOURCE_MISSING'
+  | 'UNIFORM_VALUE_INVALID'
+  | 'STORAGE_BUFFER_OUT_OF_BOUNDS'
+  | 'STORAGE_BUFFER_READ_FAILED'
+  | 'RENDER_GRAPH_INVALID'
+  | 'PINGPONG_CONFIGURATION_INVALID'
+  | 'TEXTURE_USAGE_INVALID'
+  | 'TEXTURE_REQUEST_FAILED'
+  | 'TEXTURE_DECODE_UNAVAILABLE'
+  | 'TEXTURE_REQUEST_ABORTED'
+  | 'COMPUTE_COMPILATION_FAILED'
+  | 'COMPUTE_CONTRACT_INVALID'
+  | 'MOTIONGPU_RUNTIME_ERROR';
+```
+
+<Expandable title="Error code descriptions">
+
+| Code | Description |
+|------|-------------|
+| `WEBGPU_UNAVAILABLE` | WebGPU API is not available in this browser or context. Fatal. |
+| `WEBGPU_ADAPTER_UNAVAILABLE` | GPU adapter request failed. Fatal. |
+| `WEBGPU_CONTEXT_UNAVAILABLE` | Canvas cannot create a WebGPU context. |
+| `WGSL_COMPILATION_FAILED` | WGSL shader compilation produced errors. |
+| `MATERIAL_PREPROCESS_FAILED` | Fragment preprocessor failed (invalid `#include` or define). |
+| `WEBGPU_DEVICE_LOST` | WebGPU device was lost. Fatal. |
+| `WEBGPU_UNCAPTURED_ERROR` | A GPU command failed asynchronously. |
+| `BIND_GROUP_MISMATCH` | Shader bindings and runtime resources are out of sync. |
+| `RUNTIME_RESOURCE_MISSING` | Uniform, texture, or storage resource name not found. |
+| `UNIFORM_VALUE_INVALID` | Uniform value shape does not match the declared type. |
+| `STORAGE_BUFFER_OUT_OF_BOUNDS` | Write offset + length exceeds storage buffer size. |
+| `STORAGE_BUFFER_READ_FAILED` | Storage buffer GPU readback failed. |
+| `RENDER_GRAPH_INVALID` | Pass inputs/outputs reference missing targets or slots. |
+| `PINGPONG_CONFIGURATION_INVALID` | `PingPongComputePass` missing required target key. |
+| `TEXTURE_USAGE_INVALID` | Texture usage flags incompatible with intended operation. |
+| `TEXTURE_REQUEST_FAILED` | URL fetch for texture failed. |
+| `TEXTURE_DECODE_UNAVAILABLE` | `createImageBitmap` not available in this runtime. Fatal. |
+| `TEXTURE_REQUEST_ABORTED` | Texture load request was cancelled. |
+| `COMPUTE_COMPILATION_FAILED` | Compute shader WGSL compilation failed. |
+| `COMPUTE_CONTRACT_INVALID` | Compute shader violates the required `@compute @workgroup_size` contract. |
+| `MOTIONGPU_RUNTIME_ERROR` | General uncategorized runtime error. |
+
+</Expandable>
+
+---
+
+### `MotionGPUErrorSeverity`
+
+Severity level for user-facing diagnostics.
+
+```typescript
+type MotionGPUErrorSeverity = 'error' | 'fatal';
+```
+
+`'fatal'` errors require renderer re-creation or a page reload. `'error'` severity indicates the runtime may recover.
+
+---
+
+### `MotionGPUErrorPhase`
+
+Runtime phase in which an error occurred.
+
+```typescript
+type MotionGPUErrorPhase = 'initialization' | 'render';
+```
+
+---
+
+### `MotionGPUErrorSource`
+
+Structured source context displayed in shader compilation error diagnostics.
+
+```typescript
+interface MotionGPUErrorSource {
+  component: string;
+  location: string;
+  line: number;
+  column?: number;
+  snippet: MotionGPUErrorSourceLine[];
+}
+```
+
+<ResponseField name="component" type="string">
+  Display name of the source component (e.g. filename, include name, or define name).
+</ResponseField>
+
+<ResponseField name="location" type="string">
+  Human-readable location label combining component and line/column info.
+</ResponseField>
+
+<ResponseField name="line" type="number">
+  1-based line number in the mapped user source.
+</ResponseField>
+
+<ResponseField name="column" type="number">
+  1-based column number, when available.
+</ResponseField>
+
+<ResponseField name="snippet" type="MotionGPUErrorSourceLine[]">
+  Surrounding source code lines for display in the error overlay.
+</ResponseField>
+
+---
+
+### `MotionGPUErrorSourceLine`
+
+One source code line in a diagnostics snippet.
+
+```typescript
+interface MotionGPUErrorSourceLine {
+  number: number;
+  code: string;
+  highlight: boolean;
+}
+```
+
+<ResponseField name="number" type="number">
+  1-based line number.
+</ResponseField>
+
+<ResponseField name="code" type="string">
+  Raw source code text for this line.
+</ResponseField>
+
+<ResponseField name="highlight" type="boolean">
+  When `true`, this line is the primary error location and should be highlighted in the UI.
+</ResponseField>
+
+---
+
+## Scheduler types
+
+### `MotionGPUScheduler`
+
+Public scheduler control surface shared by framework adapters (React, Svelte). A subset of `FrameRegistry`.
+
+```typescript
+type MotionGPUScheduler = Pick<
+  FrameRegistry,
+  | 'createStage'
+  | 'getStage'
+  | 'setDiagnosticsEnabled'
+  | 'getDiagnosticsEnabled'
+  | 'getLastRunTimings'
+  | 'getSchedule'
+  | 'setProfilingEnabled'
+  | 'setProfilingWindow'
+  | 'resetProfiling'
+  | 'getProfilingEnabled'
+  | 'getProfilingWindow'
+  | 'getProfilingSnapshot'
+>;
+```
+
+---
+
+### `SchedulerPreset`
+
+Named scheduler configuration presets.
+
+```typescript
+type SchedulerPreset = 'balanced' | 'debug' | 'performance';
+```
+
+| Preset | `diagnosticsEnabled` | `profilingEnabled` | `profilingWindow` |
+|--------|---------------------|--------------------|-------------------|
+| `'performance'` | `false` | `false` | `60` |
+| `'balanced'` | `true` | `true` | `120` |
+| `'debug'` | `true` | `true` | `240` |
+
+---
+
+### `SchedulerPresetConfig`
+
+Resolved scheduler timing configuration after applying a preset.
+
+```typescript
+interface SchedulerPresetConfig {
+  diagnosticsEnabled: boolean;
+  profilingEnabled: boolean;
+  profilingWindow: number;
+}
+```
+
+<ResponseField name="diagnosticsEnabled" type="boolean">
+  Whether runtime diagnostics capture is enabled.
+</ResponseField>
+
+<ResponseField name="profilingEnabled" type="boolean">
+  Whether per-task/stage profiling is enabled.
+</ResponseField>
+
+<ResponseField name="profilingWindow" type="number">
+  Number of frames retained in the profiling history window.
+</ResponseField>
+
+<Note>
+  `diagnosticsEnabled` and `profilingEnabled` currently share one internal toggle. Both values must match when applying overrides via `applySchedulerPreset`.
+</Note>
+
+---
+
+### `SchedulerDebugSnapshot`
+
+Aggregated scheduler diagnostics snapshot for debug tooling and overlays.
+
+```typescript
+interface SchedulerDebugSnapshot {
+  diagnosticsEnabled: boolean;
+  profilingEnabled: boolean;
+  profilingWindow: number;
+  schedule: FrameScheduleSnapshot;
+  lastRunTimings: FrameRunTimings | null;
+  profilingSnapshot: FrameProfilingSnapshot | null;
+}
+```
+
+<ResponseField name="diagnosticsEnabled" type="boolean">
+  Current diagnostics toggle state.
+</ResponseField>
+
+<ResponseField name="profilingEnabled" type="boolean">
+  Current profiling toggle state.
+</ResponseField>
+
+<ResponseField name="profilingWindow" type="number">
+  Active profiling history window in frames.
+</ResponseField>
+
+<ResponseField name="schedule" type="FrameScheduleSnapshot">
+  Dependency-sorted stage and task execution order snapshot.
+</ResponseField>
+
+<ResponseField name="lastRunTimings" type="FrameRunTimings | null">
+  Per-stage and per-task timings from the most recent frame run.
+</ResponseField>
+
+<ResponseField name="profilingSnapshot" type="FrameProfilingSnapshot | null">
+  Aggregated timing statistics across the profiling history window.
+</ResponseField>
+
+---
+
+### `ApplySchedulerPresetOptions`
+
+Optional overrides applied on top of a named scheduler preset via `applySchedulerPreset`.
+
+```typescript
+interface ApplySchedulerPresetOptions {
+  diagnosticsEnabled?: boolean;
+  profilingEnabled?: boolean;
+  profilingWindow?: number;
+}
+```
+
+<ResponseField name="diagnosticsEnabled" type="boolean">
+  Override for the preset's `diagnosticsEnabled` value.
+</ResponseField>
+
+<ResponseField name="profilingEnabled" type="boolean">
+  Override for the preset's `profilingEnabled` value.
+</ResponseField>
+
+<ResponseField name="profilingWindow" type="number">
+  Override for the preset's `profilingWindow` value.
+</ResponseField>
+
+---
+
+## Texture loader types
+
+### `LoadedTexture`
+
+Loaded texture payload returned by `loadTextureFromUrl` and `loadTexturesFromUrls`.
+
+```typescript
+interface LoadedTexture {
+  url: string;
+  source: ImageBitmap;
+  width: number;
+  height: number;
+  colorSpace: 'srgb' | 'linear';
+  update?: TextureUpdateMode;
+  flipY?: boolean;
+  premultipliedAlpha?: boolean;
+  generateMipmaps?: boolean;
+  dispose: () => void;
+}
+```
+
+<ResponseField name="url" type="string">
+  Original source URL.
+</ResponseField>
+
+<ResponseField name="source" type="ImageBitmap">
+  Decoded `ImageBitmap` ready for GPU upload.
+</ResponseField>
+
+<ResponseField name="width" type="number">
+  Bitmap width in pixels.
+</ResponseField>
+
+<ResponseField name="height" type="number">
+  Bitmap height in pixels.
+</ResponseField>
+
+<ResponseField name="colorSpace" type="'srgb' | 'linear'">
+  Effective color space used during decode.
+</ResponseField>
+
+<ResponseField name="update" type="TextureUpdateMode">
+  Effective runtime update strategy, if provided at load time.
+</ResponseField>
+
+<ResponseField name="flipY" type="boolean">
+  Effective flip-y metadata, if provided at load time.
+</ResponseField>
+
+<ResponseField name="premultipliedAlpha" type="boolean">
+  Effective premultiplied-alpha metadata, if provided at load time.
+</ResponseField>
+
+<ResponseField name="generateMipmaps" type="boolean">
+  Effective mipmap generation metadata, if provided at load time.
+</ResponseField>
+
+<ResponseField name="dispose" type="() => void">
+  Releases the underlying `ImageBitmap` resources. Call after uploading to GPU.
+</ResponseField>
+
+---
+
+### `TextureDecodeOptions`
+
+Options controlling bitmap decode behavior passed to `createImageBitmap`.
+
+```typescript
+interface TextureDecodeOptions {
+  colorSpaceConversion?: 'default' | 'none';
+  premultiplyAlpha?: 'default' | 'none' | 'premultiply';
+  imageOrientation?: 'none' | 'flipY';
+}
+```
+
+<ResponseField name="colorSpaceConversion" type="'default' | 'none'">
+  Controls color-space conversion during decode. Defaults to `'none'` when `colorSpace: 'linear'`, otherwise `'default'`.
+</ResponseField>
+
+<ResponseField name="premultiplyAlpha" type="'default' | 'none' | 'premultiply'">
+  Controls alpha premultiplication during decode. Defaults to `'default'`.
+</ResponseField>
+
+<ResponseField name="imageOrientation" type="'none' | 'flipY'">
+  Controls bitmap orientation during decode. Defaults to `'none'`.
+</ResponseField>
+
+---
+
+### `TextureLoadOptions`
+
+Options controlling URL-based texture loading and decode.
+
+```typescript
+interface TextureLoadOptions {
+  colorSpace?: 'srgb' | 'linear';
+  requestInit?: RequestInit;
+  decode?: TextureDecodeOptions;
+  signal?: AbortSignal;
+  update?: TextureUpdateMode;
+  flipY?: boolean;
+  premultipliedAlpha?: boolean;
+  generateMipmaps?: boolean;
+}
+```
+
+<ResponseField name="colorSpace" type="'srgb' | 'linear'">
+  Desired texture color space. Defaults to `'srgb'`.
+</ResponseField>
+
+<ResponseField name="requestInit" type="RequestInit">
+  Fetch options forwarded to `fetch`. Use for custom headers, credentials, or cache modes.
+</ResponseField>
+
+<ResponseField name="decode" type="TextureDecodeOptions">
+  Decode options forwarded to `createImageBitmap`.
+</ResponseField>
+
+<ResponseField name="signal" type="AbortSignal">
+  Optional cancellation signal. When aborted, the load throws an `AbortError`.
+</ResponseField>
+
+<ResponseField name="update" type="TextureUpdateMode">
+  Optional runtime update strategy attached to the `LoadedTexture` result.
+</ResponseField>
+
+<ResponseField name="flipY" type="boolean">
+  Optional flip-y metadata attached to the `LoadedTexture` result.
+</ResponseField>
+
+<ResponseField name="premultipliedAlpha" type="boolean">
+  Optional premultiplied-alpha metadata attached to the `LoadedTexture` result.
+</ResponseField>
+
+<ResponseField name="generateMipmaps" type="boolean">
+  Optional mipmap generation metadata attached to the `LoadedTexture` result.
+</ResponseField>

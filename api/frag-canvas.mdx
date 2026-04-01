@@ -1,0 +1,255 @@
+---
+title: "FragCanvas"
+description: "The main component for Motion GPU. Manages the WebGPU context, pipeline, render loop, and provides context to child hooks."
+---
+
+`FragCanvas` is the root component for every Motion GPU scene. It owns the WebGPU device, compiles the fragment pipeline from your `FragMaterial`, drives the render loop, and exposes context that `useFrame` and `useMotionGPU` depend on.
+
+## Import
+
+<Tabs>
+  <Tab title="Svelte">
+    ```typescript
+    import { FragCanvas } from '@motion-core/motion-gpu/svelte';
+    ```
+  </Tab>
+  <Tab title="React">
+    ```typescript
+    import { FragCanvas } from '@motion-core/motion-gpu/react';
+    ```
+  </Tab>
+</Tabs>
+
+## Basic usage
+
+<Tabs>
+  <Tab title="Svelte">
+    ```svelte
+    <script>
+      import { FragCanvas, defineMaterial } from '@motion-core/motion-gpu/svelte';
+
+      const material = defineMaterial({
+        fragment: `
+fn frag(uv: vec2f) -> vec4f {
+  return vec4f(uv.x, uv.y, 0.25, 1.0);
+}
+        `
+      });
+    </script>
+
+    <FragCanvas {material} />
+    ```
+  </Tab>
+  <Tab title="React">
+    ```tsx
+    import { FragCanvas, defineMaterial } from '@motion-core/motion-gpu/react';
+
+    const material = defineMaterial({
+      fragment: `
+fn frag(uv: vec2f) -> vec4f {
+  return vec4f(uv.x, uv.y, 0.25, 1.0);
+}
+      `
+    });
+
+    export function Scene() {
+      return <FragCanvas material={material} />;
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Props
+
+### Required
+
+<ParamField path="material" type="FragMaterial" required>
+  The material to render. Create one with `defineMaterial()`. The material defines the fragment shader, uniform declarations, texture slots, and storage buffers. Changing the material's signature (uniforms, textures, output color space) rebuilds the GPU pipeline.
+</ParamField>
+
+### Rendering
+
+<ParamField path="renderMode" type="'always' | 'on-demand' | 'manual'" default="'always'">
+  Controls when frames are submitted to the GPU.
+
+  - `'always'` — renders every animation frame via `requestAnimationFrame`.
+  - `'on-demand'` — renders only when `invalidate()` is called from `useMotionGPU` or a frame callback.
+  - `'manual'` — renders only when `advance()` is called explicitly.
+</ParamField>
+
+<ParamField path="autoRender" type="boolean" default="true">
+  Hard gate for the render loop. When `false`, no frames are rendered regardless of `renderMode` or `invalidate()` calls. Useful for pausing rendering entirely without changing mode.
+</ParamField>
+
+<ParamField path="clearColor" type="[number, number, number, number]" default="[0, 0, 0, 1]">
+  RGBA clear color applied to the canvas before the base pass each frame. Values are in the `[0, 1]` range.
+</ParamField>
+
+<ParamField path="outputColorSpace" type="'srgb' | 'linear'" default="'srgb'">
+  Color space for the final canvas presentation. Changing this value triggers a full renderer rebuild.
+
+  <Warning>
+    Changing `outputColorSpace` after initial mount destroys and recreates the GPU renderer. Avoid toggling this at runtime in production.
+  </Warning>
+</ParamField>
+
+<ParamField path="dpr" type="number" default="window.devicePixelRatio (or 1 during SSR)">
+  Device pixel ratio used to scale the canvas resolution. The physical GPU resolution is `containerSize × dpr`. Pass a fixed value to opt out of automatic high-DPI scaling.
+</ParamField>
+
+<ParamField path="maxDelta" type="number" default="0.1">
+  Maximum frame delta in seconds. Clamps `state.delta` in frame callbacks to prevent large jumps after tab suspension or slow frames. Must be greater than `0`.
+</ParamField>
+
+### Post-processing
+
+<ParamField path="passes" type="AnyPass[]" default="[]">
+  An ordered array of render and compute passes executed after the base fragment pass each frame. Passes run in array order. See [Render Passes](/api/passes) for available pass classes and slot routing rules.
+</ParamField>
+
+<ParamField path="renderTargets" type="RenderTargetDefinitionMap" default="{}">
+  Named off-screen render target definitions. Keys become named slots available to pass `input` and `output` options. Each value is a `RenderTargetDefinition` with optional `width`, `height`, `scale`, and `format` fields.
+
+  ```typescript
+  renderTargets={{
+    halfRes: { scale: 0.5 },
+    bloom: { width: 512, height: 512, format: 'rgba16float' }
+  }}
+  ```
+</ParamField>
+
+### WebGPU configuration
+
+<ParamField path="adapterOptions" type="GPURequestAdapterOptions" default="undefined">
+  Options forwarded to `navigator.gpu.requestAdapter()`. Use `powerPreference: 'high-performance'` to request the discrete GPU on multi-GPU systems.
+</ParamField>
+
+<ParamField path="deviceDescriptor" type="GPUDeviceDescriptor" default="undefined">
+  Descriptor forwarded to `adapter.requestDevice()`. Use to request specific WebGPU features or override default limits.
+</ParamField>
+
+### Error handling
+
+<ParamField path="onError" type="(report: MotionGPUErrorReport) => void" default="undefined">
+  Called whenever a runtime or initialization error occurs. Receives a `MotionGPUErrorReport` with `title`, `message`, `phase`, and source location fields. Called regardless of the `showErrorOverlay` setting.
+</ParamField>
+
+<ParamField path="showErrorOverlay" type="boolean" default="true">
+  When `true`, renders an error overlay on top of the canvas if an error occurs. Set to `false` to suppress the built-in overlay and handle errors entirely through `onError` or `errorRenderer`.
+</ParamField>
+
+<ParamField path="errorRenderer" type="Snippet<[MotionGPUErrorReport]> (Svelte) / (report: MotionGPUErrorReport) => ReactNode (React)" default="undefined">
+  Custom error renderer. When provided, replaces the default `MotionGPUErrorOverlay` component. Receives the current `MotionGPUErrorReport` and renders in its place. Only active when `showErrorOverlay` is `true`.
+</ParamField>
+
+<ParamField path="errorHistoryLimit" type="number" default="0">
+  Enables bounded error history when greater than `0`. Values are normalized with `Math.floor`. Setting to `0` or less disables history entirely and clears any existing entries. Reducing the limit trims the existing history immediately.
+</ParamField>
+
+<ParamField path="onErrorHistory" type="(history: MotionGPUErrorReport[]) => void" default="undefined">
+  Called whenever the error history changes. Receives a snapshot of the current ring-buffer history up to `errorHistoryLimit` entries. Consecutive identical errors are deduplicated by `phase`, `title`, `message`, and `rawMessage`.
+</ParamField>
+
+### Styling
+
+<ParamField path="class" type="string" default="''">
+  CSS class applied to the `<canvas>` element. Svelte only — React uses `className`.
+</ParamField>
+
+<ParamField path="className" type="string" default="''">
+  CSS class applied to the `<canvas>` element. React only — Svelte uses `class`.
+</ParamField>
+
+<ParamField path="style" type="string (Svelte) / React.CSSProperties (React)" default="'' (Svelte) / undefined (React)">
+  Inline styles applied directly to the `<canvas>` element.
+</ParamField>
+
+<ParamField path="children" type="Snippet (Svelte) / ReactNode (React)" default="undefined">
+  Child components rendered inside the `FragCanvas` context tree. `useFrame`, `useMotionGPU`, and other hooks only work inside this subtree.
+
+  <Note>
+    `useFrame` and `useMotionGPU` must be called inside a `FragCanvas` subtree. Calling them outside will throw a missing-context error.
+  </Note>
+</ParamField>
+
+## Canvas sizing
+
+`FragCanvas` renders a `<canvas>` inside a wrapper `<div>`. The canvas fills the wrapper with `width: 100%; height: 100%` CSS. The wrapper is `position: relative; overflow: hidden`. The physical GPU resolution is `containerSize × dpr`.
+
+Control canvas dimensions by sizing the container element, not the canvas or wrapper directly.
+
+## Lifecycle
+
+| Phase | What happens |
+|---|---|
+| **Mount** | Frame registry and context created. Material resolved. Pipeline signature computed. Renderer created (async). `requestAnimationFrame` loop started. |
+| **Frame** | Timing computed. Canvas size checked. Scheduler tasks run. Render gate evaluated. If open: uniforms merged, textures uploaded, passes executed, frame presented. |
+| **Signature change** | Old renderer destroyed. New renderer created with the updated pipeline signature. Exponential backoff on repeated failures. |
+| **Destroy** | `requestAnimationFrame` cancelled. Renderer destroyed and GPU resources freed. Frame scheduler cleared. |
+
+## Full configuration example
+
+<Tabs>
+  <Tab title="Svelte">
+    ```svelte
+    <script>
+      import { FragCanvas, defineMaterial, ShaderPass } from '@motion-core/motion-gpu/svelte';
+
+      const material = defineMaterial({ fragment: myShader });
+      const vignettePass = new ShaderPass({ fragment: vignetteShader });
+    </script>
+
+    <FragCanvas
+      {material}
+      clearColor={[0.05, 0.05, 0.1, 1]}
+      outputColorSpace="srgb"
+      renderMode="on-demand"
+      autoRender={true}
+      maxDelta={0.05}
+      dpr={2}
+      passes={[vignettePass]}
+      renderTargets={{ halfRes: { scale: 0.5 } }}
+      adapterOptions={{ powerPreference: 'high-performance' }}
+      showErrorOverlay={true}
+      onError={(report) => console.error(report)}
+      errorHistoryLimit={20}
+      class="my-canvas"
+      style="border-radius: 12px;"
+    >
+      <Runtime />
+    </FragCanvas>
+    ```
+  </Tab>
+  <Tab title="React">
+    ```tsx
+    import { FragCanvas, defineMaterial, ShaderPass } from '@motion-core/motion-gpu/react';
+
+    const material = defineMaterial({ fragment: myShader });
+    const vignettePass = new ShaderPass({ fragment: vignetteShader });
+
+    export function Scene() {
+      return (
+        <FragCanvas
+          material={material}
+          clearColor={[0.05, 0.05, 0.1, 1]}
+          outputColorSpace="srgb"
+          renderMode="on-demand"
+          autoRender={true}
+          maxDelta={0.05}
+          dpr={2}
+          passes={[vignettePass]}
+          renderTargets={{ halfRes: { scale: 0.5 } }}
+          adapterOptions={{ powerPreference: 'high-performance' }}
+          showErrorOverlay={true}
+          onError={(report) => console.error(report)}
+          errorHistoryLimit={20}
+          className="my-canvas"
+          style={{ borderRadius: '12px' }}
+        >
+          <Runtime />
+        </FragCanvas>
+      );
+    }
+    ```
+  </Tab>
+</Tabs>

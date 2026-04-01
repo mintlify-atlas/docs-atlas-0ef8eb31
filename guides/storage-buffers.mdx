@@ -1,0 +1,308 @@
+---
+title: "Storage Buffers"
+description: "Declare, write, and read GPU-side typed arrays shared between the CPU, compute shaders, and fragment shaders."
+---
+
+Storage buffers are GPU-side typed arrays that live in GPU memory for the lifetime of the renderer. Compute shaders can read and write them; fragment shaders can read them. They are the primary mechanism for sharing structured data between the CPU, the compute pipeline, and the rendering pipeline.
+
+<CardGroup cols={2}>
+  <Card title="Write from CPU" icon="upload">
+    Upload typed array data every frame with `state.writeStorageBuffer()`.
+  </Card>
+  <Card title="Read back to CPU" icon="download">
+    Async GPU → CPU readback with `state.readStorageBuffer()`.
+  </Card>
+  <Card title="Access in compute" icon="bolt">
+    Auto-bound at `group(1)` with `read_write` access in compute shaders.
+  </Card>
+  <Card title="Access in fragment" icon="image">
+    Auto-bound at `group(1)` with `read` access in fragment shaders.
+  </Card>
+</CardGroup>
+
+## Declaring storage buffers
+
+Declare storage buffers in `defineMaterial({ storageBuffers })`. Each entry maps a WGSL binding name to a `StorageBufferDefinition`.
+
+```typescript
+import { defineMaterial } from '@motion-core/motion-gpu';
+
+const material = defineMaterial({
+  fragment: `
+fn frag(uv: vec2f) -> vec4f {
+  let idx = u32(uv.x * f32(arrayLength(&particles)));
+  let p = particles[idx];
+  return vec4f(p.rgb, 1.0);
+}
+`,
+  storageBuffers: {
+    particles: {
+      size: 4096,                          // bytes — must be > 0 and a multiple of 4
+      type: 'array<vec4f>',                // WGSL element type
+      access: 'read-write',                // default
+      initialData: new Float32Array(1024)  // optional initial upload
+    }
+  }
+});
+```
+
+### StorageBufferDefinition fields
+
+<ParamField path="size" type="number" required>
+  Buffer size in bytes. Must be a finite number `> 0` and a multiple of `4`. Changing this field triggers a full renderer rebuild.
+</ParamField>
+
+<ParamField path="type" type="StorageBufferType" required>
+  WGSL element type used for the shader binding declaration. See supported types below.
+</ParamField>
+
+<ParamField path="access" type="'read' | 'read-write'" default="'read-write'">
+  Access mode for compute shaders. Fragment shaders always use read-only access regardless of this field.
+</ParamField>
+
+<ParamField path="initialData" type="Float32Array | Uint32Array | Int32Array">
+  Data uploaded to the GPU buffer on creation. Byte length must not exceed `size`.
+</ParamField>
+
+### Supported element types
+
+```typescript
+type StorageBufferType =
+  | 'array<f32>'
+  | 'array<vec2f>'
+  | 'array<vec3f>'
+  | 'array<vec4f>'
+  | 'array<u32>'
+  | 'array<i32>'
+  | 'array<vec4u>'
+  | 'array<vec4i>';
+```
+
+### Access modes
+
+| Mode | WGSL qualifier in compute | WGSL qualifier in fragment |
+|---|---|---|
+| `'read'` | `var<storage, read>` | `var<storage, read>` |
+| `'read-write'` | `var<storage, read_write>` | `var<storage, read>` |
+
+<Note>
+  WGSL does not support write-only storage buffers. Fragment shaders are always given read-only access regardless of the declared access mode.
+</Note>
+
+---
+
+## Writing data from the CPU
+
+Call `state.writeStorageBuffer(name, data, options?)` inside a `useFrame` callback to queue a CPU → GPU upload. Writes are batched as **pending storage writes** and flushed to the GPU at the start of the next render.
+
+<Tabs>
+  <Tab title="Svelte">
+    ```svelte
+    <script lang="ts">
+      import { useFrame } from '@motion-core/motion-gpu/svelte';
+
+      const positions = new Float32Array(1024 * 4);
+
+      useFrame((state) => {
+        // Update positions on the CPU
+        for (let i = 0; i < positions.length; i += 4) {
+          positions[i]     = Math.sin(state.time + i) * 0.5 + 0.5;
+          positions[i + 1] = Math.cos(state.time + i) * 0.5 + 0.5;
+          positions[i + 2] = 0;
+          positions[i + 3] = 1;
+        }
+
+        // Full upload
+        state.writeStorageBuffer('particles', positions);
+
+        // Partial upload with byte offset
+        const patch = new Float32Array([1.0, 0.0, 0.0, 1.0]);
+        state.writeStorageBuffer('particles', patch, { offset: 0 });
+      });
+    </script>
+    ```
+  </Tab>
+  <Tab title="React">
+    ```tsx
+    import { useFrame } from '@motion-core/motion-gpu/react';
+    import { useRef } from 'react';
+
+    function ParticleUpdater() {
+      const positions = useRef(new Float32Array(1024 * 4));
+
+      useFrame((state) => {
+        const p = positions.current;
+        for (let i = 0; i < p.length; i += 4) {
+          p[i]     = Math.sin(state.time + i) * 0.5 + 0.5;
+          p[i + 1] = Math.cos(state.time + i) * 0.5 + 0.5;
+          p[i + 2] = 0;
+          p[i + 3] = 1;
+        }
+
+        state.writeStorageBuffer('particles', p);
+      });
+
+      return null;
+    }
+    ```
+  </Tab>
+</Tabs>
+
+### Write validation rules
+
+<Accordion title="Validation rules enforced at runtime">
+  - The buffer name must be declared in `material.storageBuffers`. Writing to an unknown name throws `RUNTIME_RESOURCE_MISSING`.
+  - `offset` must be `>= 0`.
+  - `offset + data.byteLength` must not exceed the declared buffer `size`. Exceeding bounds throws `STORAGE_BUFFER_OUT_OF_BOUNDS`.
+</Accordion>
+
+---
+
+## Reading data back to the CPU
+
+Call `state.readStorageBuffer(name)` to copy GPU buffer contents back to the CPU. This returns a `Promise<ArrayBuffer>`.
+
+<Tabs>
+  <Tab title="Svelte">
+    ```svelte
+    <script lang="ts">
+      import { useFrame } from '@motion-core/motion-gpu/svelte';
+
+      useFrame(async (state) => {
+        const buffer = await state.readStorageBuffer('particles');
+        const data = new Float32Array(buffer);
+        console.log('First particle x:', data[0], 'y:', data[1]);
+      });
+    </script>
+    ```
+  </Tab>
+  <Tab title="React">
+    ```tsx
+    import { useFrame } from '@motion-core/motion-gpu/react';
+
+    function ParticleDebugger() {
+      useFrame(async (state) => {
+        const buffer = await state.readStorageBuffer('particles');
+        const data = new Float32Array(buffer);
+        console.log('First particle x:', data[0], 'y:', data[1]);
+      });
+
+      return null;
+    }
+    ```
+  </Tab>
+</Tabs>
+
+### How readback works
+
+<Steps>
+  <Step title="Staging buffer created">
+    A temporary GPU buffer is created with `MAP_READ | COPY_DST` usage flags.
+  </Step>
+  <Step title="Copy to staging">
+    A `copyBufferToBuffer` command is submitted to copy the storage buffer into the staging buffer.
+  </Step>
+  <Step title="Map for CPU read">
+    `mapAsync(GPUMapMode.READ)` is called on the staging buffer. The promise resolves when the GPU copy is complete.
+  </Step>
+  <Step title="Copy and return">
+    The mapped range is copied into a new `ArrayBuffer` (with `.slice(0)`), the staging buffer is unmapped and destroyed, and the `ArrayBuffer` is returned.
+  </Step>
+</Steps>
+
+<Warning>
+  Readback involves a GPU → CPU transfer and is inherently slow. Avoid calling `readStorageBuffer` every frame in performance-critical code. Use it for debugging, analytics, or low-frequency reads.
+</Warning>
+
+### Readback caveats
+
+- Requires the renderer to be initialized. If called before the first render, the promise rejects with `STORAGE_BUFFER_READ_FAILED`.
+- The returned `ArrayBuffer` is a copy — modifying it has no effect on the GPU buffer.
+- If the GPU device is unavailable, the promise rejects with an appropriate error.
+
+---
+
+## Accessing storage buffers in WGSL
+
+Storage buffers are automatically bound at `group(1)` in both compute and fragment shaders. You do **not** write `@group` or `@binding` attributes yourself — the library generates them. Simply use the buffer name.
+
+Buffers are assigned bindings in **lexicographic order** by name.
+
+### In compute shaders
+
+```wgsl
+// The library generates:
+// @group(1) @binding(0) var<storage, read_write> particles: array<vec4f>;
+
+@compute @workgroup_size(64)
+fn compute(@builtin(global_invocation_id) id: vec3u) {
+  let i = id.x;
+  particles[i] = particles[i] + vec4f(0.0, -0.001, 0.0, 0.0);
+}
+```
+
+### In fragment shaders
+
+```wgsl
+// The library generates:
+// @group(1) @binding(0) var<storage, read> particles: array<vec4f>;
+
+fn frag(uv: vec2f) -> vec4f {
+  let idx = u32(uv.x * f32(arrayLength(&particles)));
+  return vec4f(particles[idx].rgb, 1.0);
+}
+```
+
+---
+
+## Initial data
+
+When `initialData` is provided, the buffer is populated on GPU creation before the first frame runs. This is the preferred way to seed simulation state.
+
+```typescript
+const initialPositions = new Float32Array([
+  0.5,  0.5, 0.0, 1.0,   // particle 0: x, y, z, brightness
+  0.25, 0.75, 0.0, 0.8,  // particle 1
+  0.75, 0.25, 0.0, 0.6   // particle 2
+]);
+
+const material = defineMaterial({
+  fragment: myFragment,
+  storageBuffers: {
+    positions: {
+      size: initialPositions.byteLength,
+      type: 'array<vec4f>',
+      initialData: initialPositions
+    }
+  }
+});
+```
+
+Supported typed array types for `initialData`: `Float32Array`, `Uint32Array`, `Int32Array`.
+
+---
+
+## Performance considerations
+
+<Accordion title="When writes trigger a renderer rebuild">
+  Changes to the **definition** (name, size, type, or access) change the material signature and trigger a full renderer rebuild.
+
+  | Change | Triggers rebuild? |
+  |---|---|
+  | Adding or removing a storage buffer | Yes |
+  | Changing `size`, `type`, or `access` | Yes |
+  | `writeStorageBuffer()` at runtime | No |
+  | `readStorageBuffer()` at runtime | No |
+</Accordion>
+
+<Accordion title="CPU → GPU write latency">
+  Writes are batched and submitted at the start of the next render call. There is no round-trip cost for writes — they are one-way queued transfers.
+</Accordion>
+
+<Accordion title="GPU → CPU read latency">
+  Reads require submitting a copy command, waiting for the GPU to finish, and mapping the result. This is inherently asynchronous and incurs a multi-frame delay. Keep reads infrequent or run them in a non-blocking `async` frame callback.
+</Accordion>
+
+<Tip>
+  For particle systems and simulations where the GPU writes all state, avoid `readStorageBuffer` entirely — let compute shaders write to storage textures that the fragment shader samples directly.
+</Tip>

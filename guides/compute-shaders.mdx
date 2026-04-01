@@ -1,0 +1,535 @@
+---
+title: "Compute Shaders"
+description: "Run GPU compute workloads alongside your fragment shaders using ComputePass and PingPongComputePass."
+---
+
+WebGPU compute shaders let you run arbitrary parallel computation on the GPU — outside of the fragment pipeline. Motion GPU integrates compute passes directly into the `FragCanvas` render graph so compute output is always available to your fragment shader on the same frame.
+
+<CardGroup cols={2}>
+  <Card title="ComputePass" icon="bolt">
+    Single-dispatch compute for particle systems, image processing, and general GPU compute.
+  </Card>
+  <Card title="PingPongComputePass" icon="arrows-rotate">
+    Iterative multi-pass compute for fluid dynamics, reaction-diffusion, and iterative solvers.
+  </Card>
+</CardGroup>
+
+## When to use compute shaders
+
+Compute shaders are the right choice when you need to:
+
+- Update thousands of particle positions every frame on the GPU
+- Run iterative simulations (fluid, reaction-diffusion, cellular automata)
+- Perform image processing passes that write to textures before the fragment shader reads them
+- Share mutable data between the CPU and GPU via storage buffers
+
+## ComputePass
+
+`ComputePass` wraps a single WGSL compute shader dispatch. Construct one, add it to the `passes` prop of `FragCanvas`, and it runs before the fragment render every frame.
+
+```typescript
+import { ComputePass } from '@motion-core/motion-gpu';
+
+const simulate = new ComputePass({
+  compute: `
+@compute @workgroup_size(64)
+fn compute(@builtin(global_invocation_id) id: vec3u) {
+  let i = id.x;
+  particles[i] = particles[i] + vec4f(0.0, -0.001, 0.0, 0.0);
+}
+`,
+  dispatch: [16] // 16 workgroups × 64 threads = 1024 invocations
+});
+```
+
+### WGSL compute contract
+
+Every `ComputePass` shader must satisfy this contract or construction throws:
+
+<Steps>
+  <Step title="Declare @compute @workgroup_size">
+    The function must carry `@compute` and `@workgroup_size(X)`, `@workgroup_size(X, Y)`, or `@workgroup_size(X, Y, Z)`. Dimensions must be integers in the valid WebGPU range (`1–65535`).
+  </Step>
+  <Step title="Name the entrypoint 'compute'">
+    The function must be named `compute` — i.e., `fn compute(...)`. The library looks for this exact identifier.
+  </Step>
+  <Step title="Accept @builtin(global_invocation_id) in the signature">
+    The `compute` function itself (not just elsewhere in the module) must receive `@builtin(global_invocation_id)` as a parameter.
+  </Step>
+</Steps>
+
+```wgsl
+// Minimal valid compute shader
+@compute @workgroup_size(8, 8)
+fn compute(@builtin(global_invocation_id) id: vec3u) {
+  // id.xy gives the 2-D pixel coordinate for this invocation
+}
+```
+
+### Dispatch strategies
+
+The `dispatch` option controls how many workgroups the GPU launches:
+
+<Tabs>
+  <Tab title="Static">
+    Fixed workgroup counts — use when your data size is known at build time.
+
+    ```typescript
+    // [x], [x, y], or [x, y, z]
+    const pass = new ComputePass({
+      compute: shader,
+      dispatch: [16]        // 16 × 1 × 1
+    });
+
+    const pass2d = new ComputePass({
+      compute: shader,
+      dispatch: [32, 32]    // 32 × 32 × 1
+    });
+    ```
+  </Tab>
+  <Tab title="Auto">
+    Derived from `ceil(canvasSize / workgroupSize)` per axis — automatically scales with the canvas resolution.
+
+    ```typescript
+    const pass = new ComputePass({
+      compute: shader,
+      dispatch: 'auto'      // default
+    });
+    ```
+
+    <Note>
+      `'auto'` is the default when `dispatch` is omitted. It divides the canvas dimensions by the shader's workgroup size so every pixel gets exactly one invocation.
+    </Note>
+  </Tab>
+  <Tab title="Dynamic">
+    A callback called every frame with the current `ComputeDispatchContext`. Use this when dispatch counts depend on runtime state.
+
+    ```typescript
+    const pass = new ComputePass({
+      compute: shader,
+      dispatch: (ctx) => [
+        Math.ceil(ctx.width / ctx.workgroupSize[0]),
+        Math.ceil(ctx.height / ctx.workgroupSize[1]),
+        1
+      ]
+    });
+    ```
+  </Tab>
+</Tabs>
+
+### ComputeDispatchContext fields
+
+<ParamField path="width" type="number">
+  Canvas width in pixels at the time of dispatch.
+</ParamField>
+
+<ParamField path="height" type="number">
+  Canvas height in pixels at the time of dispatch.
+</ParamField>
+
+<ParamField path="time" type="number">
+  Frame timestamp in seconds (monotonic clock).
+</ParamField>
+
+<ParamField path="delta" type="number">
+  Time since the last frame in seconds.
+</ParamField>
+
+<ParamField path="workgroupSize" type="[number, number, number]">
+  Parsed `@workgroup_size` values extracted from the shader source.
+</ParamField>
+
+### ComputePass runtime API
+
+| Method | Description |
+|---|---|
+| `setCompute(source)` | Replace the compute shader — triggers pipeline rebuild |
+| `setDispatch(dispatch)` | Update the dispatch strategy |
+| `getCompute()` | Return the current shader WGSL source |
+| `getWorkgroupSize()` | Return the parsed `[x, y, z]` workgroup size |
+
+---
+
+## PingPongComputePass
+
+`PingPongComputePass` runs the same compute shader multiple times per frame, alternating between two textures (A and B) each iteration. This enables patterns where each iteration reads from the previous iteration's output.
+
+```typescript
+import { PingPongComputePass } from '@motion-core/motion-gpu';
+
+const diffusion = new PingPongComputePass({
+  compute: `
+@compute @workgroup_size(8, 8)
+fn compute(@builtin(global_invocation_id) id: vec3u) {
+  let value = textureLoad(simA, id.xy, 0);
+  let next = value + vec4f(0.01, 0.0, 0.0, 0.0);
+  textureStore(simB, id.xy, next);
+}
+`,
+  target: 'sim',    // material must declare a storage texture named 'sim'
+  iterations: 4,    // run 4 A→B iterations per frame
+  dispatch: 'auto'
+});
+```
+
+### How A/B alternation works
+
+The engine auto-generates two texture bindings from the `target` key:
+
+| Binding | Name | Role |
+|---|---|---|
+| `@group(2) @binding(0)` | `{target}A` | Read texture — last frame's result |
+| `@group(2) @binding(1)` | `{target}B` | Write storage texture — this iteration's output |
+
+After each iteration the engine swaps the roles. After all iterations complete, `getCurrentOutput()` returns which texture holds the latest result.
+
+### PingPongComputePass options
+
+<ParamField path="compute" type="string" required>
+  WGSL compute shader source. Must satisfy the compute contract (`@compute`, `@workgroup_size`, `fn compute`, `@builtin(global_invocation_id)`).
+</ParamField>
+
+<ParamField path="target" type="string" required>
+  Storage texture key declared in `material.textures` with `storage: true`. The engine creates `{target}A` and `{target}B` bindings automatically. The texture definition should include explicit `width` and `height` for ping-pong allocation.
+</ParamField>
+
+<ParamField path="iterations" type="number" default="1">
+  Number of compute iterations per frame. Must be a positive integer `>= 1`.
+</ParamField>
+
+<ParamField path="dispatch" type="[number, number?, number?] | 'auto' | function" default="'auto'">
+  Workgroup dispatch strategy — same options as `ComputePass`.
+</ParamField>
+
+<ParamField path="enabled" type="boolean" default="true">
+  Whether this pass is active. A disabled pass is fully skipped in the render graph.
+</ParamField>
+
+### PingPongComputePass runtime API
+
+| Method | Description |
+|---|---|
+| `getCurrentOutput()` | Returns the texture key holding the latest result (`{target}A` or `{target}B`) |
+| `setIterations(count)` | Update iteration count (must be `>= 1`) |
+| `setCompute(source)` | Replace compute shader |
+| `setDispatch(dispatch)` | Update dispatch strategy |
+
+---
+
+## Integrating compute passes with FragCanvas
+
+Both pass types are passed to `FragCanvas` via the `passes` prop. Compute passes execute **before** fragment rendering so buffers and textures are up to date when the fragment shader reads them.
+
+<Tabs>
+  <Tab title="Svelte">
+    ```svelte
+    <script lang="ts">
+      import { FragCanvas, useFrame, defineMaterial } from '@motion-core/motion-gpu/svelte';
+      import { ComputePass } from '@motion-core/motion-gpu';
+
+      const material = defineMaterial({
+        fragment: `
+    fn frag(uv: vec2f) -> vec4f {
+      let idx = u32(uv.x * f32(arrayLength(&particles)));
+      return vec4f(particles[idx].rgb, 1.0);
+    }
+    `,
+        storageBuffers: {
+          particles: {
+            size: 1024 * 16,   // 1024 vec4f entries
+            type: 'array<vec4f>',
+            access: 'read-write'
+          }
+        }
+      });
+
+      const simulate = new ComputePass({
+        compute: `
+    @compute @workgroup_size(64)
+    fn compute(@builtin(global_invocation_id) id: vec3u) {
+      let i = id.x;
+      let pos = particles[i];
+      // Apply gravity
+      particles[i] = pos + vec4f(0.0, -0.001 * pos.w, 0.0, 0.0);
+    }
+    `,
+        dispatch: [16]
+      });
+
+      useFrame((state) => {
+        state.setUniform('uTime', state.time);
+      });
+    </script>
+
+    <FragCanvas {material} passes={[simulate]} />
+    ```
+  </Tab>
+  <Tab title="React">
+    ```tsx
+    import { FragCanvas, useFrame, defineMaterial } from '@motion-core/motion-gpu/react';
+    import { ComputePass } from '@motion-core/motion-gpu';
+
+    const material = defineMaterial({
+      fragment: `
+    fn frag(uv: vec2f) -> vec4f {
+      let idx = u32(uv.x * f32(arrayLength(&particles)));
+      return vec4f(particles[idx].rgb, 1.0);
+    }
+    `,
+      storageBuffers: {
+        particles: {
+          size: 1024 * 16,
+          type: 'array<vec4f>',
+          access: 'read-write'
+        }
+      }
+    });
+
+    const simulate = new ComputePass({
+      compute: `
+    @compute @workgroup_size(64)
+    fn compute(@builtin(global_invocation_id) id: vec3u) {
+      let i = id.x;
+      let pos = particles[i];
+      particles[i] = pos + vec4f(0.0, -0.001 * pos.w, 0.0, 0.0);
+    }
+    `,
+      dispatch: [16]
+    });
+
+    function Scene() {
+      useFrame((state) => {
+        state.setUniform('uTime', state.time);
+      });
+      return null;
+    }
+
+    export function ParticleCanvas() {
+      return (
+        <FragCanvas material={material} passes={[simulate]}>
+          <Scene />
+        </FragCanvas>
+      );
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Storage buffers in compute shaders
+
+Storage buffers declared in `defineMaterial({ storageBuffers })` are automatically bound at `group(1)` in compute shaders. Reference them by name — the library generates the WGSL binding declarations for you.
+
+```wgsl
+// Declared as: storageBuffers: { particles: { size: 4096, type: 'array<vec4f>' } }
+// The library generates the binding:
+// @group(1) @binding(0) var<storage, read_write> particles: array<vec4f>;
+
+@compute @workgroup_size(64)
+fn compute(@builtin(global_invocation_id) id: vec3u) {
+  let i = id.x;
+  particles[i] = particles[i] + vec4f(0.0, -0.001, 0.0, 0.0);
+}
+```
+
+Buffers are bound in lexicographic order by name. See [Storage Buffers](/guides/storage-buffers) for the full API.
+
+## Storage textures in compute shaders
+
+Textures declared with `storage: true` in `material.textures` are bound at `group(2)` and can be written by compute shaders using `textureStore`.
+
+```typescript
+const material = defineMaterial({
+  fragment: `
+fn frag(uv: vec2f) -> vec4f {
+  return textureSample(field, fieldSampler, uv);
+}
+`,
+  textures: {
+    field: {
+      storage: true,
+      format: 'rgba16float',
+      width: 512,
+      height: 512
+    }
+  }
+});
+```
+
+```wgsl
+// Write to storage texture in compute shader
+@compute @workgroup_size(8, 8)
+fn compute(@builtin(global_invocation_id) id: vec3u) {
+  let uv = vec2f(f32(id.x) / 512.0, f32(id.y) / 512.0);
+  textureStore(field, id.xy, vec4f(uv, 0.0, 1.0));
+}
+```
+
+<Warning>
+  Storage textures require a storage-compatible `format` (e.g. `rgba16float`, `rgba32float`, `r32float`). Using an incompatible format throws a `TEXTURE_USAGE_INVALID` error at runtime.
+</Warning>
+
+## Bind group layout reference
+
+| Group | Contents |
+|---|---|
+| `group(0)` | Frame uniforms (`motiongpuFrame`) + user uniforms (`motiongpuUniforms`) |
+| `group(1)` | Storage buffers — one binding per declared buffer, alphabetical order |
+| `group(2)` | Storage textures — one binding per declared storage texture |
+
+`PingPongComputePass` uses `group(2)` for the A/B pair:
+
+| Binding | Contents |
+|---|---|
+| `@group(2) @binding(0)` | `{target}A` — read texture |
+| `@group(2) @binding(1)` | `{target}B` — write storage texture |
+
+## Render graph behavior
+
+Compute passes in the `passes` array behave differently from render passes:
+
+- They do **not** participate in slot routing (`source`/`target`/`canvas`).
+- They do **not** trigger ping-pong buffer swaps.
+- They share the same `GPUCommandEncoder` as the render passes submitted in the same frame.
+- Disabled passes (`enabled: false`) are fully skipped.
+
+---
+
+## Example: particle simulation
+
+A full particle system example combining a compute pass, storage buffer, CPU uploads, and fragment visualization.
+
+<Tabs>
+  <Tab title="Svelte">
+    ```svelte
+    <script lang="ts">
+      import { FragCanvas, useFrame, defineMaterial } from '@motion-core/motion-gpu/svelte';
+      import { ComputePass } from '@motion-core/motion-gpu';
+
+      const PARTICLE_COUNT = 1024;
+      const BUFFER_SIZE = PARTICLE_COUNT * 4 * 4; // 1024 vec4f = 16384 bytes
+
+      const material = defineMaterial({
+        fragment: `
+    fn frag(uv: vec2f) -> vec4f {
+      var color = vec3f(0.0);
+      for (var i = 0u; i < 1024u; i++) {
+        let p = particles[i];
+        let d = length(uv - p.xy);
+        color += vec3f(1.0 - smoothstep(0.0, 0.008, d)) * p.w;
+      }
+      return vec4f(color, 1.0);
+    }
+    `,
+        storageBuffers: {
+          particles: {
+            size: BUFFER_SIZE,
+            type: 'array<vec4f>',
+            access: 'read-write',
+            initialData: (() => {
+              const d = new Float32Array(PARTICLE_COUNT * 4);
+              for (let i = 0; i < PARTICLE_COUNT; i++) {
+                d[i * 4] = Math.random();     // x
+                d[i * 4 + 1] = Math.random(); // y
+                d[i * 4 + 2] = 0;            // z (unused)
+                d[i * 4 + 3] = Math.random(); // brightness
+              }
+              return d;
+            })()
+          }
+        }
+      });
+
+      const simulate = new ComputePass({
+        compute: `
+    @compute @workgroup_size(64)
+    fn compute(@builtin(global_invocation_id) id: vec3u) {
+      let i = id.x;
+      var p = particles[i];
+      p.y -= 0.001;
+      if (p.y < 0.0) { p.y = 1.0; }
+      particles[i] = p;
+    }
+    `,
+        dispatch: [PARTICLE_COUNT / 64]
+      });
+
+      useFrame((state) => {
+        state.setUniform('uTime', state.time);
+      });
+    </script>
+
+    <FragCanvas {material} passes={[simulate]} style="width:100%;height:100vh;" />
+    ```
+  </Tab>
+  <Tab title="React">
+    ```tsx
+    import { FragCanvas, useFrame, defineMaterial } from '@motion-core/motion-gpu/react';
+    import { ComputePass } from '@motion-core/motion-gpu';
+
+    const PARTICLE_COUNT = 1024;
+    const BUFFER_SIZE = PARTICLE_COUNT * 4 * 4;
+
+    const initialData = (() => {
+      const d = new Float32Array(PARTICLE_COUNT * 4);
+      for (let i = 0; i < PARTICLE_COUNT; i++) {
+        d[i * 4] = Math.random();
+        d[i * 4 + 1] = Math.random();
+        d[i * 4 + 2] = 0;
+        d[i * 4 + 3] = Math.random();
+      }
+      return d;
+    })();
+
+    const material = defineMaterial({
+      fragment: `
+    fn frag(uv: vec2f) -> vec4f {
+      var color = vec3f(0.0);
+      for (var i = 0u; i < 1024u; i++) {
+        let p = particles[i];
+        let d = length(uv - p.xy);
+        color += vec3f(1.0 - smoothstep(0.0, 0.008, d)) * p.w;
+      }
+      return vec4f(color, 1.0);
+    }
+    `,
+      storageBuffers: {
+        particles: {
+          size: BUFFER_SIZE,
+          type: 'array<vec4f>',
+          access: 'read-write',
+          initialData
+        }
+      }
+    });
+
+    const simulate = new ComputePass({
+      compute: `
+    @compute @workgroup_size(64)
+    fn compute(@builtin(global_invocation_id) id: vec3u) {
+      let i = id.x;
+      var p = particles[i];
+      p.y -= 0.001;
+      if (p.y < 0.0) { p.y = 1.0; }
+      particles[i] = p;
+    }
+    `,
+      dispatch: [PARTICLE_COUNT / 64]
+    });
+
+    function Updater() {
+      useFrame((state) => {
+        state.setUniform('uTime', state.time);
+      });
+      return null;
+    }
+
+    export function ParticleCanvas() {
+      return (
+        <FragCanvas material={material} passes={[simulate]} style={{ width: '100%', height: '100vh' }}>
+          <Updater />
+        </FragCanvas>
+      );
+    }
+    ```
+  </Tab>
+</Tabs>

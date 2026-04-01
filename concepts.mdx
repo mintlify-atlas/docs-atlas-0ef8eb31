@@ -1,0 +1,216 @@
+---
+title: "Core concepts"
+description: "Understand the three-phase model, pipeline rebuild rules, render modes, and validation contracts that govern Motion GPU."
+keywords: ["motion gpu", "concepts", "material", "useframe", "fragcanvas", "render mode", "pipeline", "wgsl", "validation"]
+---
+
+Motion GPU is built around a clear three-phase model that separates shader compilation, per-frame updates, and rendering into distinct responsibilities. Understanding these phases makes it straightforward to reason about when the GPU pipeline rebuilds, what you can update at runtime, and how render scheduling works.
+
+## The three-phase model
+
+### Material phase — `defineMaterial`
+
+`defineMaterial(...)` is the compile-time step. It validates and freezes everything that defines the shape of the GPU pipeline:
+
+- WGSL fragment source (validated against the `fn frag(uv: vec2f) -> vec4f` contract)
+- Uniform declarations and their initial values
+- Texture slot declarations
+- Compile-time `defines` (injected as WGSL `const` declarations)
+- WGSL `includes` (inlined via `#include <name>` directives)
+- Storage buffer declarations
+
+A deterministic material signature is generated from the resolved shader source and layout metadata. This signature drives the pipeline rebuild policy — if the signature changes between renders, the renderer tears down the old GPU pipeline and builds a new one.
+
+```typescript
+import { defineMaterial } from '@motion-core/motion-gpu/react';
+
+const material = defineMaterial({
+  fragment: `
+fn frag(uv: vec2f) -> vec4f {
+  let wave = 0.5 + 0.5 * sin(motiongpuUniforms.uTime + uv.x * 8.0);
+  return vec4f(vec3f(wave), 1.0);
+}
+`,
+  uniforms: {
+    uTime: 0
+  }
+});
+```
+
+<Tip>
+  Place `defineMaterial` at module scope or outside your component so the frozen material object is created once and reused across renders. Creating a new material instance on every render will trigger a pipeline rebuild on every render.
+</Tip>
+
+### Frame phase — `useFrame`
+
+`useFrame` is the runtime update step. Its callback runs once per scheduled frame, inside the `<FragCanvas>` subtree. You use it to push per-frame values into the renderer without touching the material definition:
+
+- `state.setUniform(name, value)` — update a declared uniform value
+- `state.setTexture(name, value)` — update a declared texture slot
+- `state.writeStorageBuffer(name, data, { offset? })` — write CPU data to a GPU storage buffer
+- `state.readStorageBuffer(name)` — async GPU-to-CPU storage buffer readback, returns `Promise<ArrayBuffer>`
+- `state.invalidate(token?)` — mark the current frame as dirty for `on-demand` render mode
+- `state.advance()` — request a single render in `manual` render mode
+
+The callback also exposes read-only state: `state.time` (elapsed seconds), `state.delta` (frame delta in seconds), `state.renderMode`, `state.autoRender`, and `state.canvas`.
+
+```typescript
+import { useFrame } from '@motion-core/motion-gpu/react';
+
+function Runtime() {
+  useFrame((state) => {
+    state.setUniform('uTime', state.time);
+  });
+  return null;
+}
+```
+
+### Renderer phase — `FragCanvas`
+
+`FragCanvas` is the orchestration layer. It resolves material state, manages the WebGPU context and pipeline lifecycle, schedules frame tasks, and decides whether to submit a render based on:
+
+- `renderMode` prop (`'always'`, `'on-demand'`, or `'manual'`)
+- Invalidation and advance signals from `useFrame` callbacks
+- The `autoRender` prop
+
+`FragCanvas` owns the canvas element and the full GPU resource lifecycle. Unmounting it destroys the renderer and releases GPU resources.
+
+---
+
+## Pipeline rebuild rules
+
+The GPU pipeline is an expensive resource. Motion GPU rebuilds it only when necessary.
+
+### Triggers a rebuild
+
+- The material signature changes — any change to fragment source, uniform layout, texture layout, defines, includes, or storage buffer declarations
+- The `outputColorSpace` prop on `<FragCanvas>` changes
+
+### Does not trigger a rebuild
+
+- Runtime uniform value changes (`state.setUniform`)
+- Runtime texture source changes (`state.setTexture`)
+- `clearColor` changes
+- Canvas resize — resources are resized and reallocated as needed without a full pipeline rebuild
+
+<Note>
+  This is why `defineMaterial` must be called outside your component. If you call it inside a component body, a new material instance is created on every render cycle, the signature appears to change, and the pipeline rebuilds every frame.
+</Note>
+
+---
+
+## Render modes
+
+The `renderMode` prop on `<FragCanvas>` controls when frames are submitted to the GPU.
+
+| Mode | Behavior |
+| --- | --- |
+| `'always'` | Submits a render every animation frame. Use for continuously animated shaders. |
+| `'on-demand'` | Only renders when `state.invalidate()` is called inside a `useFrame` callback. Use for shaders that only need to update in response to input or data changes. |
+| `'manual'` | Never renders automatically. Call `state.advance()` to request a single render. Use for fully controlled rendering, such as capturing frames or syncing with external timelines. |
+
+```typescript
+// React example — render only when explicitly invalidated
+<FragCanvas material={material} renderMode="on-demand">
+  <Runtime />
+</FragCanvas>
+```
+
+```svelte
+<!-- Svelte example — render only when explicitly invalidated -->
+<FragCanvas {material} renderMode="on-demand">
+  <Runtime />
+</FragCanvas>
+```
+
+---
+
+## Hard contracts and validation rules
+
+These rules are enforced by runtime validation. Violations throw descriptive errors at definition time or when the offending operation is first attempted.
+
+<AccordionGroup>
+  <Accordion title="Fragment entrypoint signature">
+    The material fragment shader must contain exactly this function signature:
+
+    ```
+    fn frag(uv: vec2f) -> vec4f
+    ```
+
+    Any other parameter name, parameter type, or return type causes `defineMaterial` to throw immediately with a descriptive error listing the functions it found.
+  </Accordion>
+
+  <Accordion title="ShaderPass fragment entrypoint signature">
+    The fragment source passed to `ShaderPass` must contain exactly this function signature:
+
+    ```
+    fn shade(inputColor: vec4f, uv: vec2f) -> vec4f
+    ```
+  </Accordion>
+
+  <Accordion title="useFrame and useMotionGPU must be called inside FragCanvas">
+    `useFrame()` and `useMotionGPU()` read from a context provided by `<FragCanvas>`. Calling them outside the `<FragCanvas>` subtree throws a context error.
+  </Accordion>
+
+  <Accordion title="You can only set declared uniforms and textures">
+    Calling `state.setUniform(name, value)` or `state.setTexture(name, value)` with a name that was not declared in `defineMaterial` throws:
+
+    > `Unknown uniform "name". Declare it in material.uniforms first.`
+
+    All uniform, texture, include, and define names must be valid WGSL identifiers matching `[A-Za-z_][A-Za-z0-9_]*`.
+  </Accordion>
+
+  <Accordion title="needsSwap constraint">
+    `needsSwap: true` is only valid on a render pass configured with `input: 'source'` and `output: 'target'`. Using it with any other input/output combination is a validation error.
+  </Accordion>
+
+  <Accordion title="Render passes cannot read from the canvas slot">
+    A render pass `input` cannot be set to `'canvas'`. The canvas slot is write-only as a final output destination.
+  </Accordion>
+
+  <Accordion title="maxDelta and profiling window must be finite and positive">
+    `maxDelta` and the profiling window passed to the scheduler must be finite numbers greater than `0`. `Infinity`, `NaN`, and `0` or below are rejected.
+  </Accordion>
+
+  <Accordion title="ComputePass shader contract">
+    A `ComputePass` shader must contain a `@compute @workgroup_size(...)` attribute and a function named `compute` with a `@builtin(global_invocation_id)` parameter:
+
+    ```wgsl
+    @compute @workgroup_size(64)
+    fn compute(@builtin(global_invocation_id) id: vec3u) {
+      // ...
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="PingPongComputePass constraints">
+    `PingPongComputePass` `iterations` must be `>= 1`. The `target` must reference a texture declared with `storage: true` and explicit `width` and `height` in `defineMaterial({ textures })`.
+  </Accordion>
+
+  <Accordion title="Compute passes do not participate in slot routing">
+    Compute passes (`ComputePass`, `PingPongComputePass`) do not support `input`, `output`, or `needsSwap`. These fields are only valid on render passes.
+  </Accordion>
+
+  <Accordion title="Storage buffer size constraints">
+    Storage buffer `size` must be greater than `0` and a multiple of `4`. All storage buffers accessed in compute shaders must be declared in `defineMaterial({ storageBuffers })`.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Writing shaders" icon="code" href="/guides/writing-shaders">
+    Learn the WGSL contract, built-in uniforms, and include directives.
+  </Card>
+  <Card title="Uniforms and textures" icon="sliders" href="/guides/uniforms-and-textures">
+    Declare and update uniforms, textures, and typed uniform values.
+  </Card>
+  <Card title="Render modes" icon="clock" href="/guides/render-modes">
+    Deep dive into always, on-demand, and manual render scheduling.
+  </Card>
+  <Card title="Render passes" icon="layer-group" href="/guides/render-passes">
+    Build multi-pass pipelines with ShaderPass, BlitPass, and CopyPass.
+  </Card>
+</CardGroup>

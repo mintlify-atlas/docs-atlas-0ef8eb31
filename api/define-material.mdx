@@ -1,0 +1,356 @@
+---
+title: "defineMaterial"
+description: "Create validated, immutable material definitions consumed by FragCanvas."
+---
+
+`defineMaterial` validates and freezes a WGSL fragment shader together with its uniforms, textures, defines, includes, and storage buffers into an immutable `FragMaterial` object.
+
+## Entrypoints
+
+| Entrypoint | Exports |
+| --- | --- |
+| `@motion-core/motion-gpu/svelte` | `defineMaterial` |
+| `@motion-core/motion-gpu/react` | `defineMaterial` |
+| `@motion-core/motion-gpu` | `defineMaterial`, `resolveMaterial` |
+
+## Signature
+
+```typescript
+function defineMaterial<
+  TUniformKey extends string = string,
+  TTextureKey extends string = string,
+  TDefineKey extends string = string,
+  TIncludeKey extends string = string,
+  TStorageBufferKey extends string = string
+>(
+  input: FragMaterialInput<TUniformKey, TTextureKey, TDefineKey, TIncludeKey, TStorageBufferKey>
+): FragMaterial<TUniformKey, TTextureKey, TDefineKey, TIncludeKey, TStorageBufferKey>
+```
+
+## Parameters
+
+<ParamField path="input" type="FragMaterialInput" required>
+  Material declaration object. All fields are validated and cloned at call time.
+
+  <Expandable title="fields">
+    <ParamField path="input.fragment" type="string" required>
+      WGSL source string. Must contain an entrypoint matching the exact signature
+      `fn frag(uv: vec2f) -> vec4f`. Validation throws if the entrypoint is missing,
+      has wrong parameter names, or returns the wrong type.
+    </ParamField>
+
+    <ParamField path="input.uniforms" type="UniformMap">
+      Initial uniform values keyed by WGSL identifier. Each key must be a valid WGSL
+      identifier. Supported value shapes:
+
+      - `number` — inferred as `f32`
+      - `[number, number]` — inferred as `vec2f`
+      - `[number, number, number]` — inferred as `vec3f`
+      - `[number, number, number, number]` — inferred as `vec4f`
+      - `{ type: 'mat4x4f', value: number[] | Float32Array }` — explicit `mat4x4f`
+      - Typed forms: `{ type: 'f32' | 'vec2f' | 'vec3f' | 'vec4f', value: ... }`
+    </ParamField>
+
+    <ParamField path="input.textures" type="TextureDefinitionMap">
+      Texture slot definitions keyed by WGSL texture uniform name. Each key must be a
+      valid WGSL identifier.
+
+      <Expandable title="TextureDefinition fields">
+        <ParamField path="source" type="TextureData | TextureSource | null">
+          Default or initial texture value for this slot.
+        </ParamField>
+        <ParamField path="colorSpace" type="'srgb' | 'linear'">
+          Source color space used for format and decode decisions.
+        </ParamField>
+        <ParamField path="flipY" type="boolean">
+          Flip the image vertically during upload.
+        </ParamField>
+        <ParamField path="generateMipmaps" type="boolean">
+          Enable mipmap generation on upload.
+        </ParamField>
+        <ParamField path="premultipliedAlpha" type="boolean">
+          Upload with premultiplied-alpha mode.
+        </ParamField>
+        <ParamField path="update" type="'once' | 'onInvalidate' | 'perFrame'">
+          Dynamic source update strategy.
+        </ParamField>
+        <ParamField path="anisotropy" type="number">
+          Sampler anisotropy level (clamped internally).
+        </ParamField>
+        <ParamField path="filter" type="GPUFilterMode">
+          Min/mag filter mode.
+        </ParamField>
+        <ParamField path="addressModeU" type="GPUAddressMode">
+          U axis address mode.
+        </ParamField>
+        <ParamField path="addressModeV" type="GPUAddressMode">
+          V axis address mode.
+        </ParamField>
+        <ParamField path="storage" type="boolean">
+          When `true`, the texture is also writable by compute passes.
+        </ParamField>
+        <ParamField path="format" type="GPUTextureFormat">
+          Required when `storage` is `true`. Must be a storage-compatible GPU texture format.
+        </ParamField>
+        <ParamField path="width" type="number">
+          Explicit texture width. Required for storage textures without a source.
+        </ParamField>
+        <ParamField path="height" type="number">
+          Explicit texture height. Required for storage textures without a source.
+        </ParamField>
+        <ParamField path="fragmentVisible" type="boolean" default="true">
+          When `false`, the texture is not bound as a sampled texture in the fragment shader.
+        </ParamField>
+      </Expandable>
+    </ParamField>
+
+    <ParamField path="input.defines" type="MaterialDefines">
+      Compile-time constants injected as WGSL `const` declarations before the fragment
+      source. Keyed by WGSL identifier. Supported value types:
+
+      - `boolean` — generates `const key: bool = value;`
+      - `number` — type inferred as `f32`
+      - `{ type: 'bool', value: boolean }`
+      - `{ type: 'f32' | 'i32' | 'u32', value: number }`
+
+      Defines are injected in sorted key order and cannot be changed after `defineMaterial`
+      is called — they are part of the compiled shader signature.
+    </ParamField>
+
+    <ParamField path="input.includes" type="MaterialIncludes">
+      Named WGSL source chunks keyed by include identifier. Use `#include <name>` inside
+      your fragment shader to splice a chunk in place. Circular includes throw at
+      preprocessing time.
+    </ParamField>
+
+    <ParamField path="input.storageBuffers" type="StorageBufferDefinitionMap">
+      Storage buffer resource definitions keyed by WGSL identifier.
+
+      <Expandable title="StorageBufferDefinition fields">
+        <ParamField path="size" type="number" required>
+          Buffer size in bytes. Must be greater than 0 and a multiple of 4.
+        </ParamField>
+        <ParamField path="type" type="StorageBufferType" required>
+          WGSL type annotation used for codegen. One of:
+          `'array<f32>'`, `'array<vec2f>'`, `'array<vec3f>'`, `'array<vec4f>'`,
+          `'array<u32>'`, `'array<i32>'`, `'array<vec4u>'`, `'array<vec4i>'`
+        </ParamField>
+        <ParamField path="access" type="'read' | 'read-write'" default="'read-write'">
+          Buffer access mode in compute shaders.
+        </ParamField>
+        <ParamField path="initialData" type="Float32Array | Uint32Array | Int32Array">
+          Initial data uploaded to the GPU buffer on creation. Cloned at definition time.
+        </ParamField>
+      </Expandable>
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+## Return value
+
+Returns a `FragMaterial` — a deeply frozen, immutable object safe to share across renders and store at module scope.
+
+<ResponseField name="fragment" type="string">
+  The validated WGSL fragment source.
+</ResponseField>
+<ResponseField name="uniforms" type="Readonly<UniformMap>">
+  Cloned and validated initial uniform values.
+</ResponseField>
+<ResponseField name="textures" type="Readonly<TextureDefinitionMap>">
+  Cloned and validated texture slot definitions.
+</ResponseField>
+<ResponseField name="defines" type="Readonly<MaterialDefines>">
+  Cloned and validated compile-time defines.
+</ResponseField>
+<ResponseField name="includes" type="Readonly<MaterialIncludes>">
+  Cloned and validated WGSL include chunks.
+</ResponseField>
+<ResponseField name="storageBuffers" type="Readonly<StorageBufferDefinitionMap>">
+  Cloned and validated storage buffer definitions.
+</ResponseField>
+
+<Note>
+  `FragMaterial` does not expose a public `signature` field. The signature is an
+  internal cache key computed by `resolveMaterial` and not part of the public contract.
+</Note>
+
+## Validation rules
+
+All validation runs synchronously at call time and throws a descriptive `Error` on failure.
+
+| Rule | Behavior |
+| --- | --- |
+| `fragment` must contain `fn frag(uv: vec2f) -> vec4f` | Throws with exact parameter/return-type mismatch message |
+| All map keys must be valid WGSL identifiers | Throws with offending key |
+| Storage buffer `size` must be `> 0` and a multiple of 4 | Throws with buffer name |
+| Storage texture requires `format` field | Throws with texture name |
+| `mat4x4f` uniforms should use typed form `{ type: 'mat4x4f', value: [...] }` | Ensures stable layout |
+
+## Examples
+
+### Minimal shader
+
+```typescript
+import { defineMaterial } from '@motion-core/motion-gpu/svelte';
+
+const material = defineMaterial({
+  fragment: /* wgsl */ `
+    fn frag(uv: vec2f) -> vec4f {
+      return vec4f(uv, 0.0, 1.0);
+    }
+  `
+});
+```
+
+### Uniforms and textures
+
+```typescript
+const material = defineMaterial({
+  fragment: /* wgsl */ `
+    @group(0) @binding(0) var<uniform> u: Uniforms;
+    @group(0) @binding(1) var uTex: texture_2d<f32>;
+    @group(0) @binding(2) var uSampler: sampler;
+
+    fn frag(uv: vec2f) -> vec4f {
+      let col = textureSample(uTex, uSampler, uv);
+      return col * u.tint;
+    }
+  `,
+  uniforms: {
+    tint: [1.0, 0.5, 0.2, 1.0] // vec4f inferred
+  },
+  textures: {
+    uTex: {
+      colorSpace: 'srgb',
+      flipY: true
+    }
+  }
+});
+```
+
+### Compile-time defines
+
+```typescript
+const material = defineMaterial({
+  fragment: /* wgsl */ `
+    fn frag(uv: vec2f) -> vec4f {
+      let v = uv.x * f32(STEPS);
+      return vec4f(v, v, v, 1.0);
+    }
+  `,
+  defines: {
+    STEPS: { type: 'i32', value: 8 }
+  }
+});
+```
+
+### Shader includes
+
+```typescript
+const material = defineMaterial({
+  fragment: /* wgsl */ `
+    #include <colorUtils>
+
+    fn frag(uv: vec2f) -> vec4f {
+      return linearToSrgb(vec4f(uv, 0.0, 1.0));
+    }
+  `,
+  includes: {
+    colorUtils: /* wgsl */ `
+      fn linearToSrgb(c: vec4f) -> vec4f {
+        return vec4f(pow(c.rgb, vec3f(1.0 / 2.2)), c.a);
+      }
+    `
+  }
+});
+```
+
+### Storage buffer
+
+```typescript
+const material = defineMaterial({
+  fragment: /* wgsl */ `
+    fn frag(uv: vec2f) -> vec4f {
+      return vec4f(0.0, 0.0, 0.0, 1.0);
+    }
+  `,
+  storageBuffers: {
+    particles: {
+      size: 4 * 4 * 1024, // 1024 vec4f values
+      type: 'array<vec4f>',
+      access: 'read-write'
+    }
+  }
+});
+```
+
+---
+
+## `resolveMaterial()`
+
+`resolveMaterial` is an internal function used by `FragCanvas` to turn a validated
+`FragMaterial` into renderer-ready data. It is also exported from the core entrypoint
+for use in custom adapter implementations.
+
+```typescript
+function resolveMaterial<
+  TUniformKey extends string,
+  TTextureKey extends string,
+  TDefineKey extends string,
+  TIncludeKey extends string,
+  TStorageBufferKey extends string
+>(
+  material: FragMaterial<TUniformKey, TTextureKey, TDefineKey, TIncludeKey, TStorageBufferKey>
+): ResolvedMaterial<TUniformKey, TTextureKey, TIncludeKey, TStorageBufferKey>
+```
+
+Results are cached per `FragMaterial` instance using a `WeakMap`, so repeated calls for
+the same frozen material object are free.
+
+<Warning>
+  Do not call `resolveMaterial` at render time in application code. Pass a
+  `FragMaterial` to `<FragCanvas material={...}>` and let the runtime resolve it
+  internally.
+</Warning>
+
+`ResolvedMaterial` exposes the following fields for adapter authors:
+
+<ResponseField name="fragmentWgsl" type="string">
+  Final WGSL source after define injection and include expansion.
+</ResponseField>
+<ResponseField name="fragmentLineMap" type="MaterialLineMap">
+  1-based map from generated fragment lines to user source lines, used for error diagnostics.
+</ResponseField>
+<ResponseField name="uniforms" type="UniformMap">
+  Cloned initial uniform values.
+</ResponseField>
+<ResponseField name="textures" type="TextureDefinitionMap">
+  Cloned texture definitions.
+</ResponseField>
+<ResponseField name="uniformLayout" type="UniformLayout">
+  Resolved packed uniform buffer layout with byte offsets and sizes.
+</ResponseField>
+<ResponseField name="textureKeys" type="string[]">
+  Sorted texture binding keys.
+</ResponseField>
+<ResponseField name="storageBufferKeys" type="string[]">
+  Sorted storage buffer keys.
+</ResponseField>
+<ResponseField name="storageTextureKeys" type="string[]">
+  Sorted keys of textures with `storage: true`.
+</ResponseField>
+<ResponseField name="signature" type="string">
+  Deterministic JSON string used for renderer cache invalidation.
+</ResponseField>
+<ResponseField name="fragmentSource" type="string">
+  Original user fragment source before preprocessing.
+</ResponseField>
+<ResponseField name="includeSources" type="MaterialIncludes">
+  Normalized include source map.
+</ResponseField>
+<ResponseField name="defineBlockSource" type="string">
+  Deterministic WGSL define block prepended before the fragment source.
+</ResponseField>
+<ResponseField name="source" type="Readonly<MaterialSourceMetadata> | null">
+  Callsite metadata captured at `defineMaterial` time, used for WGSL error reporting.
+</ResponseField>
